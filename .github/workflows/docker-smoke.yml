@@ -1,0 +1,57 @@
+# Build both images and smoke-test them. Never pushes anything.
+#
+# Runs on every push to main and every pull request that touches what goes
+# into an image, and on demand (Actions tab > docker-smoke > Run workflow).
+# Tag a release only on a commit where this is green: release.yml builds the
+# same Dockerfile, but does not re-run these checks.
+#
+# What it cannot cover: Docker Desktop on Windows/macOS. The runner is Linux
+# with Docker Engine, which is what most people run images on, but the
+# Desktop VM and its Windows-drive file sharing are not exercised here.
+
+name: docker-smoke
+
+on:
+  push:
+    branches: [main]
+    paths: ["maskerade/**", "pyproject.toml", "Dockerfile", ".dockerignore",
+            "docker/**", ".github/smoke-test.sh", ".github/workflows/docker-smoke.yml"]
+  pull_request:
+    paths: ["maskerade/**", "pyproject.toml", "Dockerfile", ".dockerignore",
+            "docker/**", ".github/smoke-test.sh", ".github/workflows/docker-smoke.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_BUILDKIT: "1"
+
+jobs:
+  light:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build light image
+        run: docker build --target light -t maskerade:ci .
+      - name: Smoke test
+        run: bash .github/smoke-test.sh maskerade:ci
+      - name: Image size
+        run: echo "light image $(docker image inspect -f '{{.Size}}' maskerade:ci | awk '{printf "%.0f MB", $1/1000000}')" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  ner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free disk space (torch + the model need several GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@v4
+      - name: Build NER image
+        run: docker build --target ner -t maskerade:ci-ner .
+      - name: Smoke test (no network at runtime)
+        run: bash .github/smoke-test.sh --ner maskerade:ci-ner
+      - name: Image size
+        run: echo "ner image $(docker image inspect -f '{{.Size}}' maskerade:ci-ner | awk '{printf "%.1f GB", $1/1000000000}')" | tee -a "$GITHUB_STEP_SUMMARY"

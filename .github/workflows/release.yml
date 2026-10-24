@@ -1,0 +1,119 @@
+# Release on a version tag: v0.1.0 -> PyPI 0.1.0 and two images on ghcr.io.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# One-time setup, outside this file:
+#   PyPI   add a "trusted publisher" for project `maskerade`:
+#          owner adamectimotei, repository maskerade-proxy,
+#          workflow release.yml, environment pypi.
+#          No API token is stored anywhere.
+#   GitHub create an environment named `pypi` (Settings > Environments).
+#          Optional: add yourself as a required reviewer, so every PyPI
+#          upload waits for a click.
+#
+# Kept minimal on purpose: a broken release workflow is worse than a manual
+# release. Each third-party action is pinned to a major version, not to a
+# commit SHA. Pinning to SHAs is stronger, and is worth doing once the
+# workflow has run green.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Tag must match maskerade.__version__
+        id: v
+        run: |
+          v=$(python -c "import ast;t=ast.parse(open('maskerade/__init__.py').read());print(next(n.value.value for n in t.body if isinstance(n,ast.Assign) and n.targets[0].id=='__version__'))")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != __version__ $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Package data present in BOTH artifacts
+        run: |
+          python - <<'EOF'
+          import glob, tarfile, zipfile
+          need = ["maskerade/default_config.yaml",
+                  "maskerade/allowlist/allowlist.yaml",
+                  "maskerade/allowlist/allowlist_overrides.yaml",
+                  "maskerade/stages/allowlist/allowlist.yaml",
+                  "maskerade/stages/allowlist/allowlist_overrides.yaml",
+                  "maskerade/proxy/system_note.txt"]
+          w = set(zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist())
+          s = {n.split("/", 1)[1] for n in tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames() if "/" in n}
+          miss = [p for p in need if p not in w] + [p for p in need if p not in s]
+          assert not miss, miss
+          print("all package data present in wheel and sdist")
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write          # trusted publishing; nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  images:
+    # After PyPI, so an image never exists for a version that failed to
+    # publish.
+    needs: [build, pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/adamectimotei/maskerade
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Light image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: light
+          build-args: VERSION=${{ env.VERSION }}
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
+          push: true
+          provenance: false
+      - name: NER image (model baked in)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ner
+          build-args: VERSION=${{ env.VERSION }}
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}-ner
+          push: true
+          provenance: false

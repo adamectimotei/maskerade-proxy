@@ -1,0 +1,214 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maskerade"
+# The version lives in maskerade/__init__.py and nowhere else; see
+# [tool.setuptools.dynamic] at the bottom. It is read by parsing that file,
+# not importing it, so building never imports the Pipeline.
+dynamic = ["version"]
+description = "Local masking proxy that replaces client data in pentest prompts and HTTP traffic before it reaches the Anthropic API, and restores it in the reply"
+requires-python = ">=3.11"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Timotei Adamec" }]
+keywords = ["pentest", "penetration-testing", "anonymization", "pii",
+            "redaction", "masking", "proxy", "anthropic", "claude", "llm"]
+# No "License ::" classifier: PEP 639 forbids one alongside the SPDX
+# `license` expression, and setuptools refuses to build with both.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+
+# THE BASE INSTALL HAS NO TORCH IN IT. That is the point of the package, and
+# the property most easily lost by accident — any new base dependency that
+# pulls torch turns a ~50 MB install into a multi-gigabyte one. Verify with
+# bench/no_torch_check.py, not by reading this list.
+#
+# This is also the DEFAULT TIER's dependency set as of 2026-10-17: the shipped
+# default is tier "fast" (custom + regex + form + keyval + checksum + id), so
+# everything the default install runs is covered by the three lines below.
+# `maskerade[ner]` adds gliner + org_evidence and restores C2.
+#
+# requires-python is >=3.11 as of 2026-10-21 (owner decision), narrowed from
+# >=3.9 BEFORE first publication, so no published install is broken by it.
+# The verified pair is 3.11 (pod) and 3.12 (laptop); 3.9 and 3.10 were
+# never tested, and a floor nobody has run is a claim, not a fact.
+#
+# The proxy (maskerade/proxy/) adds NOTHING here. It is written against the
+# standard library — http.server, urllib — specifically so that putting a
+# daemon in the path costs no new dependency and no new attack surface. If a
+# web framework ever looks tempting, it belongs in an optional extra, not
+# here.
+dependencies = [
+    "pyyaml>=6.0",        # config + allowlist
+    "phonenumbers>=8.13",  # regex stage
+    "tiktoken>=0.7",      # form stage, entropy_method=bpe
+]
+
+[project.optional-dependencies]
+# Renamed from `nn` to `ner` on 2026-10-17, before any publication, so the
+# extra matches the name used everywhere else (the tier is the NER tier and
+# the stage is gliner). Nothing was ever installed under `nn`; no alias is
+# kept, because an alias is a second spelling that has to stay correct.
+#
+# WHAT THIS ACTUALLY PULLS, read from the wheel metadata rather than guessed
+# (gliner2 2.1.0, `pip download gliner2 --no-deps`, 2026-10-17):
+#
+#   gliner2 (base)   pydantic, requests, tqdm, urllib3        — 356 kB wheel
+#   gliner2[local]   numpy, peft, safetensors,
+#                    torch<3,>=2.1, transformers<6,>=4.43
+#
+# So the `local` extra is what carries torch, and the bare `gliner2` really
+# does install a 356 kB wheel that raises ModuleNotFoundError the first time
+# you call it. `[local]` is therefore load-bearing, not decoration.
+#
+# TORCH IS DELIBERATELY NOT PINNED HERE. gliner2[local] already bounds it at
+# <3,>=2.1, and a second bound in this file could only ever be narrower than
+# the library's own and wrong in a way nobody would see until an install
+# failed. An extra cannot carry an index URL either, so on Linux this pulls
+# the CUDA build (~2.5 GB of libraries a CPU-only tool cannot use). The
+# documented install, which step 5's README must repeat:
+#
+#   pip install maskerade[ner] --extra-index-url https://download.pytorch.org/whl/cpu
+#
+# or, equivalently, CPU torch first and the extra second:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install 'maskerade[ner]'
+#
+# Step 4's Docker image for the NER path is the real answer; this is the
+# interim one.
+#
+# GLINER2 IS PINNED EXACTLY, AND THE PIN IS A DETECTION DECISION.
+# Measured 2026-10-17: the laptop that recorded both frozen snapshots has
+# gliner2 2.0.0 installed, and PyPI already serves 2.1.0. So an unpinned
+# extra meant that `pip install maskerade[ner]` TODAY installed a different
+# inference library from the one every published number describes, with
+# nothing anywhere saying so — the gap was not theoretical, it was live.
+#
+# == rather than ~= or <. A patch release of an inference library can move a
+# span, and the thing that would catch it is bench/snapshot.py — AFTER
+# somebody had already installed it and masked with it. An exact pin makes
+# the bump a deliberate act, which is the same shape as every other
+# detection-affecting change here: predict, run both snapshots, record the
+# error. Raising it without doing that is exactly the move this file exists
+# to prevent.
+#
+# 2.0.0's own [local] extra declares transformers<5,>=4.38 — the same cap
+# stated below, reached independently. 2.1.0 widened it to <6, which is one
+# more reason the two versions are not interchangeable.
+#
+# TORCH AND TRANSFORMERS ARE NOT PINNED, deliberately. gliner2[local]
+# already bounds both, and pinning all three turns a working install into a
+# resolver fight on any machine that has torch for another reason. The
+# versions in force are reported by `maskerade --version` instead, so a bug
+# report names the exact trio that produced it rather than leaving it to be
+# guessed. Measured at the time of the frozen snapshots:
+#     gliner2 2.0.0 · torch 2.14.1+cpu · transformers 4.57.6
+#
+# Size warning, measured with `python -X importtime` on the RunPod box: once
+# torch and transformers are present, importing gliner2 also pulls
+# scikit-learn, peft, accelerate (which eagerly imports boto3 via its
+# SageMaker config), pandas, pyarrow, sympy, triton, PIL, jinja2 and fsspec —
+# roughly 88 s of instrumented import time, and the dominant term in the
+# ~115 s cold start. The base install is three declared dependencies and about
+# 5 MB of wheels. Install this extra knowingly.
+ner = ["gliner2[local]==2.0.0", "transformers[sentencepiece]<5"]
+
+# Landed 2026-10-11, together with maskerade/cli.py — the two had to arrive
+# in the same change. A `maskerade` command declared before the module exists
+# dies with ModuleNotFoundError, and a broken entry point is worse than an
+# absent one: the absent one sends you to the README, the broken one sends
+# you to a traceback.
+#
+# `maskerade sessions list` / `purge` is what makes the 30-day retention
+# policy in the threat model something an operator can act on; store.py has
+# implemented it since the proxy was built and nothing but Python could
+# reach it. `maskerade proxy` forwards verbatim to
+# `python -m maskerade.proxy.server`.
+#
+# cli.py imports the Pipeline only inside the `proxy` subcommand. That is
+# load-bearing, not tidiness: a full-tier construct is a measured 9.31 s cold
+# start (decision record §8), and `maskerade sessions list` must not pay it
+# to print four lines. `maskerade --version` holds the same line: it probes
+# for the extras with importlib.util.find_spec, which does not import them.
+[project.scripts]
+maskerade = "maskerade.cli:main"
+
+# maskefirade, NOT maskerade. The distribution is named `maskerade` and the
+# repository is `maskefirade`; this link pointed at github.com/.../maskerade,
+# which is the SEPARATE GPU production repo and is out of scope for this
+# package. A wrong Homepage is the one piece of metadata every PyPI visitor
+# sees first, and it would have sent them to a private repo that is not this
+# project.
+[project.urls]
+Homepage = "https://github.com/adamectimotei/maskerade-proxy"
+Source = "https://github.com/adamectimotei/maskerade-proxy"
+Issues = "https://github.com/adamectimotei/maskerade-proxy/issues"
+
+[tool.setuptools.packages.find]
+include = ["maskerade*"]
+
+# Data files that must travel with the wheel. `include` above finds the
+# PACKAGES; this finds the non-Python files inside them, and anything missing
+# here is simply absent from an installed copy while continuing to work
+# perfectly in an editable checkout — which is how a path can pass every test
+# on the developer's machine and fail on first run everywhere else.
+# bench/wheelcheck.py is what proves these actually shipped; `pip install -e .`
+# cannot.
+#
+# WHY EACH FILE IS LISTED TWICE. The old form declared everything under the
+# `maskerade` key, including `allowlist/*.yaml` and `proxy/system_note.txt`.
+# Both of those directories are packages in their own right, and a parent
+# package's glob reaching into a SUBPACKAGE's directory is behaviour that
+# happens to work rather than behaviour that is specified. The per-package
+# keys below are the unambiguous spelling; the parent keys are kept as a
+# fallback so that a setuptools version which resolves it the other way still
+# ships the files. Duplicate inclusion is harmless — the same bytes land at
+# the same path — and a missing allowlist is a silent detection change.
+#
+# maskerade/stages/allowlist/ has NO __init__.py, so it is not a package and
+# genuinely belongs to `maskerade.stages` as `allowlist/*.yaml`. That is the
+# second allowlist directory, read by the id stage and resolved against its
+# own module location — the one whose absence prints
+# `[ID] No allowlist - prefix veto disabled` and masks differently.
+#
+# proxy/system_note.txt is load-bearing: SystemNote.load() raises when it is
+# missing, so a wheel built without this line produces a proxy that refuses
+# to start. That is the fail-closed behaviour working, but the operator
+# should never see it.
+#
+# NOT LISTED, deliberately: maskerade/stages/_bpe_cache/. The handoff's S4.3
+# calls it a packaged file; it is not one, and must not become one.
+# warm.py's own docstring has the reasoning — cl100k_base.tiktoken is served
+# from an OpenAI blob and carries no redistribution licence of its own, so a
+# repository headed for open source does not vendor it. It is created at
+# runtime by `python -m maskerade.warm`, which is therefore a REQUIRED
+# post-install step for the default tier: form runs in tier "fast", form
+# needs the encoder, and fail-closed means no encoder is no daemon.
+[tool.setuptools.package-data]
+maskerade = [
+    "default_config.yaml",
+    "allowlist/*.yaml",
+    "stages/allowlist/*.yaml",
+    "proxy/system_note.txt",
+]
+"maskerade.allowlist" = ["*.yaml"]
+"maskerade.stages" = ["allowlist/*.yaml"]
+"maskerade.proxy" = ["system_note.txt"]
+
+[tool.setuptools.dynamic]
+version = { attr = "maskerade.__version__" }

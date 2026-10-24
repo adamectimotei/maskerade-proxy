@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Runtime artefacts that must never be committed
+# The BPE encoder is fetched by `python -m maskerade.warm`, not vendored.
+maskerade/stages/_bpe_cache/
+.tiktoken_cache/
+# `maskerade init` writes the client's names here.
+.maskerade/
+# Mask maps live in the state directory, never in a repo.
+sessions/
+
+# Captured traffic and secrets
+*.har
+*.burp
+.env
+*.pem
+*.key
+*.bak

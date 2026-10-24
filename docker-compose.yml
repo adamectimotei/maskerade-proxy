@@ -1,0 +1,66 @@
+# maskerade, one engagement.
+#
+#   cd C:\work\eng-2026-014                  # the engagement directory
+#   maskerade init --engagement eng-2026-014 # writes .maskerade/rules.txt
+#   $env:MASKERADE_ENGAGEMENT = "eng-2026-014"
+#   docker compose -f <path>\docker-compose.yml --project-directory . up -d
+#   $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"
+#
+# Check the bind from the HOST:   netstat -ano | findstr 8787
+# Expect 127.0.0.1:8787 only. Under Docker Desktop the listening process is
+# Docker's backend, not python: the loopback guarantee comes from the
+# `ports:` line below, not from the proxy's own bind.
+
+name: maskerade
+
+services:
+  maskerade:
+    image: ghcr.io/adamectimotei/maskerade:0.1.0
+    # For the full tier (gliner, about 3-4 GB, model baked in):
+    # image: ghcr.io/adamectimotei/maskerade:0.1.0-ner
+
+    ports:
+      # THE `127.0.0.1:` IS LOAD-BEARING. Inside the container the proxy
+      # binds 0.0.0.0 with --allow-remote, because a loopback bind there is
+      # unreachable from the host. What keeps it off the network is this
+      # publish. "8787:8787" without the address publishes on EVERY
+      # interface, so anyone on your network can reach a service that holds
+      # client data and unmasks it, with no authentication.
+      - "127.0.0.1:8787:8787"
+
+    volumes:
+      # Mask maps: client data. A NAMED volume, never a bind mount: the
+      # image's ownership and 0700 mode are copied into it on first use, and
+      # the proxy refuses to start on a directory it cannot restrict.
+      # `docker volume rm maskerade_maskerade-state` deletes every map.
+      - maskerade-state:/var/lib/maskerade
+      # The rules file `maskerade init` wrote, read-only. The proxy re-reads
+      # it when it changes.
+      - ./.maskerade:/engagement/.maskerade:ro
+
+    command:
+      - proxy
+      - --host
+      - 0.0.0.0
+      - --allow-remote
+      - --port
+      - "8787"
+      - --engagement
+      - ${MASKERADE_ENGAGEMENT:?set MASKERADE_ENGAGEMENT to a neutral engagement label}
+      # NER image only:
+      # - --tier
+      # - full
+
+    # Nothing outside the volume and /tmp is writable, no Linux capabilities,
+    # no privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  maskerade-state:

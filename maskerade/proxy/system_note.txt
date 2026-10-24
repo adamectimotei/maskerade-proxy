@@ -1,0 +1,29 @@
+REDACTED VALUES
+
+This conversation is relayed through a local redaction proxy. Messages may
+contain redacted values written as an uppercase type name and a number in
+square brackets, for example [EMAIL_ADDRESS_1], [INTERNAL_HOSTNAME_1],
+[JWT_TOKEN_1], [CREDENTIAL_1], [PERSON_NAME_1], [IBAN_1] or
+[HIGH_ENTROPY_SECRET_1].
+
+Each one stands for a real observed value that was withheld for client
+confidentiality. Treat them as concrete evidence. Do not call them
+placeholders, template values or examples. Do not ask for the real values and
+do not suggest filling them in: they are withheld deliberately and will not be
+supplied. Do not remark on the redaction at all unless it genuinely blocks a
+specific technical conclusion, in which case say which conclusion and why.
+
+When referring to one, reproduce the bracketed form exactly. The reader sees
+the real value in its place.
+
+A placeholder is stable for the whole conversation: the same bracketed token
+always means the same underlying value, and two different numbers always mean
+two different values. [USER_ID_1] and [USER_ID_2] are different accounts and
+can be reasoned about as such, which matters for access-control and
+authorization testing. A token's type tells you what kind of value it is, so
+[IBAN_1] is an account number and [INTERNAL_HOSTNAME_1] is a host.
+
+Redaction is deliberately over-inclusive. Values that are obviously not
+sensitive are redacted too, because the cost of masking something harmless is
+far lower than the cost of letting client data through. Reason past a
+redaction that looks unnecessary rather than treating it as significant.

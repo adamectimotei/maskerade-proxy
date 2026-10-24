@@ -1,0 +1,15 @@
+# An allowlist, not a denylist: the build context is only what the image
+# needs. Anything new in the repo stays out until it is added here on purpose.
+*
+!pyproject.toml
+!LICENSE
+!maskerade/
+!docker/entrypoint.sh
+
+# Never, even inside the allowed directories.
+**/__pycache__
+**/*.py[cod]
+**/*.bak
+**/*.bak-*
+maskerade/stages/_bpe_cache
+**/.maskerade
