@@ -144,7 +144,7 @@ def _restrict(path, is_dir):
     On Windows os.chmod cannot express an ACL, so icacls is shelled out to,
     and a failure there is returned as a warning string for the caller to
     report: a mask map with default permissions on a multi-user box is the
-    S5.2 shared-host story, and the operator should find out at startup.
+    shared-host risk, and the operator should find out at startup.
 
     On POSIX a failure REFUSES (StoreError), changed 2026-10-21. Measured
     as a non-root user on a volume root it does not own: os.chmod raised a
@@ -332,7 +332,7 @@ class SessionStore:
         ignored and the turn is fully re-detected, because the map stored
         for this label says nothing about what that other session masked.
         That is what keeps the label a hard boundary between engagements
-        (threat model S4.5) while giving turn-to-turn continuation inside it.
+        while giving turn-to-turn continuation inside it.
 
         `purge --session <label>` is unaffected: the session file is still
         <label>.json.

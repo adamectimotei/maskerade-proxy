@@ -15,8 +15,8 @@ ORGANIZATION design explicitly assumes this layer is populated. Before this
 command that meant a README step, which is a step people skip. The rules
 file is now the thing that happens first.
 
-**It is the mitigation the threat model names.** S8 item 10: an agentic
-client's working directory, home directory, git remote and branch are
+**It is the mitigation for the fields the proxy forwards unscanned.** An
+agentic client's working directory, home directory, git remote and branch are
 forwarded to the provider UNINSPECTED, so an engagement run in
 `C:\\clients\\acmebank\\...` puts the client's name in the clear. The
 pre-flight below is the discharge of that promise -- it is where the
@@ -281,11 +281,11 @@ def render_rules_text(entries, engagement):
 
 # ──────────────────────────────────────────────────────── leak pre-flight ──
 #
-# S3.3, and the part no competitor has. Everything checked here is a surface
-# that step 2 made FORWARDED-UNSCANNED, or one the tool never sees at all.
-# The competitor this command is modelled on checks the folder name alone.
-# Checking the rest is cheap and is directly motivated by the trade step 2
-# made.
+# The part no competitor has. Everything checked here is a surface the
+# proxy forwards UNSCANNED, or one the tool never sees at all. The
+# competitor this command is modelled on checks the folder name alone.
+# Checking the rest is cheap and is directly motivated by the decision to
+# forward those fields rather than refuse them.
 #
 # It WARNS. It never refuses. The operator may have good reasons -- a
 # directory they cannot rename, a branch the client's own process named --
@@ -384,7 +384,7 @@ def preflight(entries, cwd, engagement, settings_path):
     add("working directory", cwd,
         "an agentic client puts its working directory in the system prompt, "
         "in its own environment block and in `safeguards`. All three are "
-        "forwarded to the provider UNINSPECTED (threat model S8 item 10).",
+        "forwarded to the provider UNINSPECTED.",
         "work from a neutral path, or rename the directory. "
         "`C:\\work\\eng-2026-014` leaks nothing.",
         _hits(cwd, needles))
@@ -402,8 +402,7 @@ def preflight(entries, cwd, engagement, settings_path):
     for url in remotes:
         add("git remote", url,
             "the client's environment block carries git remote URLs, branch "
-            "and working-tree status, forwarded uninspected (S8.3's "
-            "inventory).",
+            "and working-tree status, forwarded uninspected.",
             "if the repository is the client's, run the engagement from a "
             "working copy with no remote, or from a directory that is not a "
             "repository at all.",
@@ -441,8 +440,7 @@ def preflight(entries, cwd, engagement, settings_path):
 #
 # The riskiest thing this command does, so it does the least that works.
 #
-# VERIFIED against the Claude Code documentation on 2026-10-18 rather than
-# taken from the handoff:
+# VERIFIED against the Claude Code documentation on 2026-10-18:
 #
 #   `env`                                   documented top-level settings key,
 #                                           a flat map of name -> string.
@@ -459,7 +457,7 @@ def preflight(entries, cwd, engagement, settings_path):
 #                                           written as "1" and removed rather
 #                                           than zeroed to re-enable.
 #
-# NOT WRITTEN: the handoff's third key, a "web-fetch pre-flight setting".
+# NOT WRITTEN: a proposed third key, a "web-fetch pre-flight setting".
 # There is no such documented key. The nearest real one is
 # CLAUDE_CODE_DISABLE_WEB_FETCH, which turns the WebFetch TOOL off -- a
 # change to what the agent can do, not a redirection of traffic through this
@@ -933,7 +931,7 @@ def _closing(engagement, rules_path, args):
          "while the")
     _say("    base URL is not api.anthropic.com, and may stop fetching the "
          "policy its")
-    _say("    vendor would otherwise apply to it (threat model S5.3, S5.4).")
+    _say("    vendor would otherwise apply to it.")
     _say("    'Only masked text leaves the machine' is a claim about this "
          "proxy's")
     _say("    egress, not about the machine's.")

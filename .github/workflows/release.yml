@@ -1,6 +1,6 @@
-# Release on a version tag: v0.1.0 -> PyPI 0.1.0 and two images on ghcr.io.
+# Release on a version tag: vX.Y.Z -> PyPI X.Y.Z and two images on ghcr.io.
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag vX.Y.Z && git push origin vX.Y.Z
 #
 # One-time setup, outside this file:
 #   PyPI   add a "trusted publisher" for project `maskerade`:
@@ -12,9 +12,10 @@
 #          upload waits for a click.
 #
 # Kept minimal on purpose: a broken release workflow is worse than a manual
-# release. Each third-party action is pinned to a major version, not to a
-# commit SHA. Pinning to SHAs is stronger, and is worth doing once the
-# workflow has run green.
+# release. Each third-party action is pinned to a full commit SHA, with the
+# release it came from in a comment. To move one, resolve the new release's
+# commit with `git ls-remote --tags https://github.com/OWNER/REPO` and
+# replace both the SHA and the comment.
 
 name: release
 
@@ -31,8 +32,8 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
       - name: Tag must match maskerade.__version__
@@ -62,7 +63,7 @@ jobs:
           assert not miss, miss
           print("all package data present in wheel and sdist")
           EOF
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
@@ -74,11 +75,11 @@ jobs:
     permissions:
       id-token: write          # trusted publishing; nothing else
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   images:
     # After PyPI, so an image never exists for a version that failed to
@@ -92,15 +93,15 @@ jobs:
       IMAGE: ghcr.io/adamectimotei/maskerade
       VERSION: ${{ needs.build.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Light image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: light
@@ -109,7 +110,7 @@ jobs:
           push: true
           provenance: false
       - name: NER image (model baked in)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ner

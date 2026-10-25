@@ -1,8 +1,8 @@
 """CPU orchestrator — the control plane for the standalone tool.
 
-Derived from pipeline/orchestrator.py in the GPU repo, with the `ner`
+Derived from the original GPU implementation's orchestrator, with the `ner`
 (Flair/Presidio) and `llm` (Ollama) branches deleted and the CPU detectors
-promoted from benchmark.py's monkey-patch into real, configurable stages.
+promoted from a benchmark-harness patch into real, configurable stages.
 
 Flow:
   1. Custom rules (user intent, highest priority)
@@ -21,8 +21,8 @@ would invalidate it.
 
 WHY THE DETECTOR SLOT IS ONE BLOCK
 ----------------------------------
-In the GPU repo every detector in this slot was composed into a single
-`ner_detect` by benchmark.apply_ner_backends(), and the orchestrator applied
+In the original implementation every detector in this slot was composed into
+a single `ner_detect` by the benchmark harness, and the orchestrator applied
 placeholder-filtering and _remove_overlaps() to the COMBINED output, once.
 
 _remove_overlaps() dedupes by entity TEXT. Splitting the slot into stages that
@@ -66,7 +66,7 @@ GENERIC_ENTITY_TYPES = frozenset({"SENSITIVE_FIELD", "HIGH_ENTROPY_SECRET"})
 
 
 # ── Stage key set ────────────────────────────────────────────────────────
-# CLOSED, deliberately. The GPU orchestrator did stages.get(name, True), so an
+# CLOSED, deliberately. The original orchestrator did stages.get(name, True), so an
 # override written before a stage existed silently ran it. With nine keys that
 # is how a "pure-Python tier" run quietly includes gliner and every latency
 # number becomes meaningless. Unknown keys raise; missing keys come from the
@@ -97,13 +97,13 @@ TIER_FAST = {
     # It stays off, and stays off for a measured reason rather than a
     # structural one: switching it on here would start dropping keyval's
     # ORGANIZATION spans, which is a DETECTION CHANGE in the under-masking
-    # direction on a tier nobody has measured yet. Under rule S2 that needs a
-    # prediction and a benchmark run, not a packaging change. Leave it.
+    # direction on a tier nobody has measured yet. That needs a prediction
+    # and a measured run, not a packaging change. Leave it.
     "org_evidence": False,
     "allowlist": True, "validator": True,
 }
 
-# C2 — the shipped configuration. See claude/DECISIONS-cpu-shipping-config.md §1.
+# C2 — the shipped configuration: every CPU detector on.
 TIER_FULL = {
     "custom": True, "regex": True, "form": True,
     "gliner": True, "keyval": True, "checksum": True, "id": True,
@@ -204,8 +204,8 @@ class Pipeline:
 
         path = allowlist_config.get("path")
         if path and not os.path.isabs(path):
-            # Relative to the PACKAGE directory. In the GPU repo this resolved
-            # against the repo root; here the allowlist ships inside the
+            # Relative to the PACKAGE directory. The original implementation
+            # resolved it against the repo root; here the allowlist ships inside the
             # package, so a relative config path means "beside the code".
             path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
 
@@ -279,8 +279,8 @@ class Pipeline:
     def _run_detectors(self, text, stages, debug=False):
         """Run the CPU detectors over the intermediate text, in fixed order.
 
-        ORDER IS LOAD-BEARING. Carried verbatim from
-        benchmark.apply_ner_backends().combined() in the GPU repo:
+        ORDER IS LOAD-BEARING. Carried verbatim from the original
+        implementation's combined detector:
 
           gliner    probabilistic semantic spans
           keyval    structural; claims freely, so its spans are in `already`
@@ -319,7 +319,7 @@ class Pipeline:
             `validation passed: True` on a run that masked a fraction of what
             it should have.
 
-            That is the §5 failure mode of the decision record wearing a
+            That is the worst failure mode this tool has, wearing a
             different hat: the tool quietly masks less than the operator
             believes, and nothing in the output says so. For a tool whose
             failure mode is sending client PII to a third party, "a stage you
@@ -517,14 +517,15 @@ class Pipeline:
 
         # ── Detector slot ──
         # ONE call, one placeholder filter, one _remove_overlaps — exactly as
-        # the GPU orchestrator treated the composed ner_detect. See the module
+        # the original orchestrator treated the composed ner_detect. See the module
         # docstring for why this must not be split per detector.
         if any(stages[name] for name in SLOT_DETECTORS):
             t0 = time.time()
             slot_entities = []
             # org_evidence corroborates against the ORIGINAL text, which it
-            # reads from module state. The GPU repo set this from benchmark.py
-            # around each run(); it is detection state, so it lives here.
+            # reads from module state. The original implementation set this from
+            # its benchmark harness around each run(); it is detection state, so
+            # it lives here.
             org_ctx = stages["gliner"] and stages["org_evidence"]
             if org_ctx:
                 try:
@@ -662,7 +663,7 @@ class Pipeline:
         # could be found. Until now the only trace was a print() to stdout, so
         # the number was unmeasurable and landed in the benchmark's recall as
         # ordinary false negatives — indistinguishable from "never detected",
-        # which needs the opposite fix. See DECISIONS §5.
+        # which needs the opposite fix.
         #
         # Note the validator CANNOT see this set: validate() tests for leaks
         # with the same word_boundary_pattern() the masker failed to match on,

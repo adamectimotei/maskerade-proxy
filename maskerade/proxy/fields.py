@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Which request fields get masked, which are forwarded, and which are named.
 
-Week 4 plan S4.2. This module locates the strings in an Anthropic Messages API
+This module locates the strings in an Anthropic Messages API
 request body that are the OPERATOR'S OWN CONTENT, so the server can mask them.
 It also accounts for every other field in the body, so the operator can be told
 what was forwarded without being inspected.
@@ -20,7 +20,7 @@ restating rather than deleting:
 
 That rule worked. Pointed at a real first-party client it caught `safeguards`,
 an undocumented structured dump of the operator's machine, which no part of the
-design had anticipated. Threat model S8.3 records it.
+design had anticipated.
 
 It also broke every agent. And a refusal does not protect the client: a
 pentester whose client returns 400 runs that client WITHOUT the proxy and leaks
@@ -93,7 +93,7 @@ conforming value; masking the working directory in an agent's system prompt
 breaks its path reasoning; masking a tool `description` changes what the model
 believes the tool does.
 
-The residual, which the threat model records rather than leaving to be found:
+The residual, stated here rather than left to be found:
 with `system` and `safeguards` unscanned, the agent's working directory reaches
 the provider. On an engagement run in `C:\\clients\\acmebank\\...` that is the
 client's name in cleartext. This is a deliberate trade; the mitigation is the
@@ -121,7 +121,7 @@ server, because it needs one property this module should not know about:
     an answer already on disk. The server detects only in content it has not
     seen, and applies the stored map to the rest.
 
-A consequence worth stating in the threat model: detection sees one message at
+A consequence worth stating: detection sees one message at
 a time rather than the whole conversation, so a client name established in
 turn 1 and mentioned bare in turn 9 is corroborated only if the stored map
 already holds it. In practice the map is exactly that memory.
@@ -234,7 +234,7 @@ TOP_UNSCANNED = {
         "home directories, trusted directories, permission rules, git state "
         "and the operator's account name. Masking it would degrade a safety "
         "control that runs on the operator's own machine. THIS IS THE "
-        "LARGEST SINGLE RESIDUAL -- see threat model S8.3",
+        "LARGEST SINGLE RESIDUAL -- see `maskerade init`",
 }
 
 # What an opt-in `--scan` flag would be able to turn on. Each has a walk in
@@ -509,8 +509,9 @@ def _block(blk, path, out, un):
                 _p(path, "source"),
                 "an %s block carries bytes this tool cannot mask. A "
                 "screenshot of a client system is client data, and "
-                "forwarding it would make the central claim of the threat "
-                "model false. Strip the block, or send the text" % btype)
+                "forwarding it would make the claim that only masked text "
+                "leaves the machine false. Strip the block, or send the "
+                "text" % btype)
         else:
             _note(un, _p(path, key), key,
                   R_BLOCK if known else R_BLOCKTYPE)
@@ -1035,7 +1036,7 @@ def _self_test():
         {"text": "no discriminator"}]}]}, "block with no type")
     refuses("not a dict", "body that is not a JSON object")
 
-    # The image message keeps its exact wording: the threat model quotes it.
+    # The image message keeps its exact wording: documentation quotes it.
     try:
         extract({"messages": [{"role": "user", "content": [
             {"type": "image", "source": {"data": "x"}}]}]})
@@ -1101,8 +1102,8 @@ def _self_test():
     check([t for _, t in got] == ["hi"], "safeguards does not block the walk")
     check("safeguards" in short_names(un), "safeguards is reported by name")
     reason = [r[2] for r in un if r[1] == "safeguards"][0]
-    check("S8.3" in reason and "LARGEST SINGLE RESIDUAL" in reason,
-          "its reason names the residual and points at the threat model")
+    check("maskerade init" in reason and "LARGEST SINGLE RESIDUAL" in reason,
+          "its reason names the residual and points at its mitigation")
 
     # A real Claude Code shape: every top-level field it sends at once.
     cc = {"model": "claude-opus-5-5", "max_tokens": 128000, "stream": True,
@@ -1130,7 +1131,7 @@ def _self_test():
 
     # ── 7. the dormant walks, called directly ───────────────────────────
     # Nothing in extract() reaches these any more. They are kept for the
-    # future `--scan` flag (S3.4), so they are tested where they live
+    # future `--scan` flag, so they are tested where they live
     # rather than left to rot behind a branch nobody takes.
     print("\n-- dormant code, exercised directly --")
 
@@ -1186,7 +1187,7 @@ def _self_test():
                          "properties": {"x": {"$ref": "#/$defs/T"}},
                          "$defs": {"T": {"type": "string"}}})
     check("https://acme.internal/s.json" not in t,
-          "$id is forwarded unmasked (bounded exception, threat model S6.1)")
+          "$id is forwarded unmasked (bounded exception: a URI reference)")
     check("#/$defs/T" not in t, "$ref is forwarded unmasked")
 
     t, n = schema_texts({"type": "object", "x-acme-internal": "client data"})

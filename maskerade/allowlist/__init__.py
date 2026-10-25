@@ -4,7 +4,7 @@ Pipeline component. Pipeline.__init__ loads it ONCE (the agent loop calls
 run() several times per tool call, so a per-run load would re-read 10k terms
 each time) and run() applies it after every detection stage, before span
 reconciliation and masking. Toggled by stages.allowlist; the run(whitelist=)
-parameter still overrides it per call for the benchmark.
+parameter still overrides it per call (used by measurement scripts).
 
 Every *.yaml in this directory is merged at load time, so an optional,
 separately-licensed file such as ``allowlist_wappalyzer.yaml`` is picked up
@@ -40,8 +40,8 @@ Matching contract (the safety property)
     allow-listed term can never cause a longer string to go unmasked.
   * custom-stage entities are never suppressed: explicit pentester intent wins,
     so a client literally named "Oracle" can be forced masked via a custom rule.
-    (At the benchmark's injection point only NER-slot entities are seen, so this
-    holds by construction, but the guard is explicit for safety.)
+    (Only detector-slot entities reach this filter, so this holds by
+    construction, but the guard is explicit for safety.)
 
 Residual risk: a client legitimately named after a technology (company called
 "Oracle") whose name is detected as a bare "Oracle" will not be masked by the
@@ -237,7 +237,7 @@ def load_allowlist(path=None):
     is picked up automatically when present and simply absent otherwise.
 
     Never raises: a missing file/dir or missing pyyaml yields an empty (no-op)
-    allow-list so the benchmark still runs.
+    allow-list so the pipeline still runs.
     """
     try:
         import yaml
@@ -255,7 +255,7 @@ def load_allowlist(path=None):
         files = [path]
     else:
         print(f"  [ALLOWLIST] {path} not found — suppression disabled "
-              f"(run tests/allowlist/build.py)")
+              f"(run maskerade/allowlist/build.py from a source checkout)")
         return AllowList()
 
     terms_by_group = {}

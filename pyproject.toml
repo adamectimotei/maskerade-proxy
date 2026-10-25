@@ -34,8 +34,8 @@ classifiers = [
 
 # THE BASE INSTALL HAS NO TORCH IN IT. That is the point of the package, and
 # the property most easily lost by accident — any new base dependency that
-# pulls torch turns a ~50 MB install into a multi-gigabyte one. Verify with
-# bench/no_torch_check.py, not by reading this list.
+# pulls torch turns a ~50 MB install into a multi-gigabyte one. Verify by
+# checking sys.modules after a fast-tier run, not by reading this list.
 #
 # This is also the DEFAULT TIER's dependency set as of 2026-10-17: the shipped
 # default is tier "fast" (custom + regex + form + keyval + checksum + id), so
@@ -100,10 +100,10 @@ dependencies = [
 # nothing anywhere saying so — the gap was not theoretical, it was live.
 #
 # == rather than ~= or <. A patch release of an inference library can move a
-# span, and the thing that would catch it is bench/snapshot.py — AFTER
+# span, and the thing that would catch it is a span snapshot — AFTER
 # somebody had already installed it and masked with it. An exact pin makes
 # the bump a deliberate act, which is the same shape as every other
-# detection-affecting change here: predict, run both snapshots, record the
+# detection-affecting change here: predict, re-measure, record the
 # error. Raising it without doing that is exactly the move this file exists
 # to prevent.
 #
@@ -135,25 +135,21 @@ ner = ["gliner2[local]==2.0.0", "transformers[sentencepiece]<5"]
 # you to a traceback.
 #
 # `maskerade sessions list` / `purge` is what makes the 30-day retention
-# policy in the threat model something an operator can act on; store.py has
+# policy something an operator can act on; store.py has
 # implemented it since the proxy was built and nothing but Python could
 # reach it. `maskerade proxy` forwards verbatim to
 # `python -m maskerade.proxy.server`.
 #
 # cli.py imports the Pipeline only inside the `proxy` subcommand. That is
 # load-bearing, not tidiness: a full-tier construct is a measured 9.31 s cold
-# start (decision record §8), and `maskerade sessions list` must not pay it
+# start on a laptop CPU, and `maskerade sessions list` must not pay it
 # to print four lines. `maskerade --version` holds the same line: it probes
 # for the extras with importlib.util.find_spec, which does not import them.
 [project.scripts]
 maskerade = "maskerade.cli:main"
 
-# maskefirade, NOT maskerade. The distribution is named `maskerade` and the
-# repository is `maskefirade`; this link pointed at github.com/.../maskerade,
-# which is the SEPARATE GPU production repo and is out of scope for this
-# package. A wrong Homepage is the one piece of metadata every PyPI visitor
-# sees first, and it would have sent them to a private repo that is not this
-# project.
+# The distribution is named `maskerade`; the repository is `maskerade-proxy`.
+# A wrong Homepage is the one piece of metadata every PyPI visitor sees first.
 [project.urls]
 Homepage = "https://github.com/adamectimotei/maskerade-proxy"
 Source = "https://github.com/adamectimotei/maskerade-proxy"
@@ -167,8 +163,8 @@ include = ["maskerade*"]
 # here is simply absent from an installed copy while continuing to work
 # perfectly in an editable checkout — which is how a path can pass every test
 # on the developer's machine and fail on first run everywhere else.
-# bench/wheelcheck.py is what proves these actually shipped; `pip install -e .`
-# cannot.
+# Listing the built wheel's contents is what proves these actually shipped;
+# `pip install -e .` cannot.
 #
 # WHY EACH FILE IS LISTED TWICE. The old form declared everything under the
 # `maskerade` key, including `allowlist/*.yaml` and `proxy/system_note.txt`.
@@ -191,8 +187,8 @@ include = ["maskerade*"]
 # to start. That is the fail-closed behaviour working, but the operator
 # should never see it.
 #
-# NOT LISTED, deliberately: maskerade/stages/_bpe_cache/. The handoff's S4.3
-# calls it a packaged file; it is not one, and must not become one.
+# NOT LISTED, deliberately: maskerade/stages/_bpe_cache/. It is not a
+# packaged file, and must not become one.
 # warm.py's own docstring has the reasoning — cl100k_base.tiktoken is served
 # from an OpenAI blob and carries no redistribution licence of its own, so a
 # repository headed for open source does not vendor it. It is created at

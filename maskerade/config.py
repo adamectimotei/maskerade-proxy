@@ -1,13 +1,13 @@
 """Load pipeline configuration from YAML.
 
-Changed from the GPU repo's pipeline/config.py in exactly one way: the default
-is the config shipped INSIDE the package rather than a config.yaml sitting in a
-repo root. A pip-installed package has no repo root.
+Changed from the original implementation's loader in exactly one way: the
+default is the config shipped INSIDE the package rather than a config.yaml
+sitting in a repo root. A pip-installed package has no repo root.
 
 Priority:
   1. explicit path argument          Pipeline(config_path="...")
   2. MASKERADE_CONFIG env var
-  3. ANON_CONFIG env var             (compatibility with the GPU repo's tooling)
+  3. ANON_CONFIG env var             (compatibility with older tooling)
   4. default_config.yaml inside this package
 """
 import os

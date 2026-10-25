@@ -14,7 +14,7 @@ WHAT IT DOES NOT DO
 -------------------
 It carries ONLY what masking makes necessary. It says nothing about tone,
 format, or how a security finding should be written. Those belong to the
-operator: Claude Code, a custom agent and the GPU repo's own server each
+operator: Claude Code, a custom agent or any other client each
 bring their own system prompt, and a proxy that quietly overrode them would
 be a surprise in the path rather than a service in it.
 

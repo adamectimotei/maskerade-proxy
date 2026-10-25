@@ -9,9 +9,8 @@
 WHY THIS EXISTS
 ---------------
 store.py has implemented list_sessions() and purge() since the proxy was
-built, and nothing could reach them except Python. The threat model states a
-30-day retention policy; a policy an operator cannot execute is a sentence,
-not a control. This is the hand on that lever.
+built, and nothing could reach them except Python. A 30-day retention
+policy an operator cannot execute is a sentence, not a control. This is the hand on that lever.
 
 IT NEVER PRINTS A MASK MAP
 --------------------------
@@ -26,7 +25,7 @@ The UNSCANNED column added 2026-10-17 holds to the same line. It lists field
 NAMES -- `system`, `tools`, `safeguards` -- which are protocol vocabulary,
 not request content. The store never writes a value or a path there, so
 there is nothing in it that a screen share could leak. It answers the
-question a CISO asks after reading the threat model: what did this
+question a CISO asks about any redaction tool: what did this
 engagement send without inspecting.
 
 IT IMPORTS NOTHING HEAVY
@@ -34,7 +33,7 @@ IT IMPORTS NOTHING HEAVY
 `sessions` touches store.py alone -- stdlib plus nothing. The Pipeline, and
 with it torch/transformers/gliner2, is imported only inside the `proxy`
 subcommand, lazily. That is not a micro-optimisation: a full-tier construct
-is a measured 9.31 s cold start on the laptop (decision record S8), and
+is a measured 9.31 s cold start on a laptop CPU, and
 `maskerade sessions list` must not pay it to print four lines. If this file
 ever grows a top-level `from maskerade import Pipeline`, that property is
 gone and nothing will say so.
@@ -106,14 +105,13 @@ def _warn(store):
 def cmd_version():
     """Print the version, the default tier, and which extras resolve.
 
-    S3.6: a bug report has to say which install it came from. Two installs
+    A bug report has to say which install it came from. Two installs
     share this version string and run different detector sets, so the version
     alone identifies nothing.
 
     NOTHING HEAVY IS IMPORTED. maskerade._extras probes with
     importlib.util.find_spec, which locates a module without executing it, so
-    this stays inside the property the module docstring above describes and
-    bench/no_torch_check.py asserts.
+    this stays inside the property the module docstring above describes.
     """
     from . import __version__
     from ._extras import ner_available, pin_mismatch, summary

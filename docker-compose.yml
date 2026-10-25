@@ -15,9 +15,9 @@ name: maskerade
 
 services:
   maskerade:
-    image: ghcr.io/adamectimotei/maskerade:0.1.0
+    image: ghcr.io/adamectimotei/maskerade:0.1.1
     # For the full tier (gliner, about 3-4 GB, model baked in):
-    # image: ghcr.io/adamectimotei/maskerade:0.1.0-ner
+    # image: ghcr.io/adamectimotei/maskerade:0.1.1-ner
 
     ports:
       # THE `127.0.0.1:` IS LOAD-BEARING. Inside the container the proxy

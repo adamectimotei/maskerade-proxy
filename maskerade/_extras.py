@@ -3,7 +3,7 @@
 
 A bug report has to say which install it came from. `pip install maskerade`
 and `pip install maskerade[ner]` are the same version string, the same
-commands and two different detector sets, so "0.1.0.dev0" on its own does not
+commands and two different detector sets, so a version string on its own does not
 identify the thing that ran.
 
 IT MUST NOT IMPORT WHAT IT REPORTS ON
@@ -11,8 +11,8 @@ IT MUST NOT IMPORT WHAT IT REPORTS ON
 importlib.util.find_spec() locates a module without executing it, so probing
 for torch costs a path search rather than the measured ~88 s of instrumented
 import time that `import gliner2` triggers once torch is present. That is not
-an optimisation here, it is a correctness requirement: bench/no_torch_check.py
-asserts that nothing heavy appears in sys.modules under the default tier, and
+an optimisation here, it is a correctness requirement: the light install
+promises that nothing heavy appears in sys.modules under the default tier, and
 this module is reachable from `maskerade --version` and from the proxy's
 startup path. A plain `import torch` inside a try/except would make the gate
 fail and would make the light install pay for a question about itself.

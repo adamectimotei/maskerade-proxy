@@ -1,13 +1,11 @@
 """Structured business-ID detection — issuer prefix + sequence counter.
 
-STANDALONE / EXPERIMENTAL — nothing in pipeline/ imports this file.
-It is wired in at runtime by benchmark.py (--id) via the same NER-slot
-monkey-patch as gliner, opf, keyval and proximity. Delete this file and the
---id flag to revert completely; no production file is touched.
+Runs in the pipeline's detector slot (maskerade/pipeline.py, _run_detectors),
+in both tiers; switched by stages.id.
 
 What it detects, and why that generalises
 -----------------------------------------
-§8 of the handoff: 16 of 47 gold false negatives share one shape —
+On the development gold set, 16 of 47 false negatives shared one shape —
 
     DRV-004578   TRIP-2026-0218-7742   KS-00142   AGT-0482   EP-2019-0847
     CC-EMEA-OPS-4421   SPZ-4AC-8821   TX-20260414-0918273   CZPE2604150082148
@@ -19,10 +17,10 @@ detector keys on the STRUCTURE of the key, never on a prefix vocabulary.
 
 Why BPE is not used here (measured, not assumed)
 ------------------------------------------------
-The obvious idea is to gate this with form_stage's BPE token efficiency —
+The obvious idea is to gate this with stages/form.py's BPE token efficiency —
 low efficiency means "random", so it should mean "identifier". Measured on
 the 16 gold IDs against 38 published-standard / CSS-framework / version
-strings (tests/bpe_id_probe.py, cl100k_base):
+strings (a one-off probe, cl100k_base):
 
     AUC 0.517            (0.500 is a coin flip; inverted it is 0.483)
     IDs       min 1.50  mean 2.00  max 3.00
@@ -174,7 +172,7 @@ def reset_stats():
 # ── Allowlist (P4) ───────────────────────────────────────────
 # The project allowlist AS IT SHIPS. No group is added, removed or reordered
 # for this stage: a vocabulary tuned to make this detector look good would be
-# exactly the patching §0 forbids.
+# exactly the corpus-fitting this project rules out.
 #
 # THE PREFIX VETO IS AN EXCEPTION TO THE ALLOWLIST'S WHOLE-TOKEN RULE.
 # Owner decision, 2026-10-14. Read this before changing it in either
@@ -318,7 +316,7 @@ def _rule(value, cfg):
         # otherwise read as an issuer code plus a counter.
         #   - an all-hex run of 8+ is a hash or an object id, never a key
         #   - an issuer code is written in caps, or the key carries a
-        #     separator; §8's shape is "uppercase prefix + separator +
+        #     separator; the target shape is "uppercase prefix + separator +
         #     digits" and a lowercase unseparated run is neither
         if _HEX_ONLY.fullmatch(value):
             return False

@@ -1,17 +1,14 @@
 """Checksum-validated national identifiers — bank accounts and birth numbers.
 
-STANDALONE / EXPERIMENTAL — nothing in pipeline/ imports this file. Wired in
-at runtime by benchmark.py (--checksum) through the same NER-slot
-monkey-patch as gliner, opf, keyval, proximity and id. Delete this file and
-the --checksum flag to revert; no production file is touched.
+Runs in the pipeline's detector slot (maskerade/pipeline.py, _run_detectors),
+in both tiers; switched by stages.checksum.
 
-Why a separate stage rather than config.yaml patterns
-------------------------------------------------------
-pipeline/regex_stage.py resolves a pattern's `validator` name against its own
+Why a separate stage rather than default_config.yaml patterns
+-------------------------------------------------------------
+stages/regex.py resolves a pattern's `validator` name against its own
 module-level VALIDATORS dict, which currently holds _validate_luhn and
 _validate_phone_possible. A new checksum therefore needs a new function IN
-that file — a config.yaml pattern alone cannot carry one. Until this is
-promoted, it lives here.
+that file — a config pattern alone cannot carry one. Until this is promoted, it lives here.
 
 What a checksum buys, and what it costs
 ----------------------------------------
@@ -52,7 +49,7 @@ The bank code is NOT covered by the checksum — the algorithm cannot tell a
 wrong bank code from a right one. The only guard is the ČNB číselník BA0030
 registry, which is why `bank_codes` exists below. It defaults to OFF: an
 incomplete or stale code list produces FALSE NEGATIVES at smaller banks, and
-per §0 that is the dangerous direction. Populate it from ČNB directly if you
+for a masking tool that is the dangerous direction. Populate it from ČNB directly if you
 want the tightening.
 
 US ABA routing transit number — 9 digits, weights 3,7,1 repeating, sum
@@ -128,7 +125,7 @@ _RC_RE = re.compile(r'(?<![\d/])(\d{6})/(\d{3,4})(?![\d/])')
 
 # ABA routing transit number. Bare 9-digit runs are far too common on their
 # own, so this one requires a routing-ish word nearby — the same 50-char
-# word-boundary context gate regex_stage already uses for phone_bare_e164.
+# word-boundary context gate stages/regex.py already uses for phone_bare_e164.
 _ABA_RE = re.compile(r'(?<!\d)(\d{9})(?!\d)')
 _ABA_WEIGHTS = [3, 7, 1, 3, 7, 1, 3, 7, 1]
 _ABA_CONTEXT = ("routing", "aba", "rtn", "abarouting", "transit", "bank",
@@ -143,7 +140,7 @@ DEFAULTS = {
     "rodne_cislo": True,
     "aba_routing": True,
     "bank_codes": None,          # ČNB BA0030; None = do not check (see docstring)
-    "context_window": 50,        # chars, matching regex_stage's existing gate
+    "context_window": 50,        # chars, matching stages/regex.py's existing gate
     "score": 1.0,
 }
 

@@ -2,11 +2,11 @@
 
 Runs AFTER masking. Scans the masked output to check whether any
 detected entity text is still visible. If it is, something went
-wrong in the masking step and we must NOT send to cloud AI.
+wrong in the masking step and we must NOT send to the provider.
 
 This is the last line of defense before data leaves the local
-environment. If the validator fails, the orchestrator blocks
-the request from going to Enterprise AI.
+environment. If the validator fails, the pipeline blocks
+the request from going to the provider.
 
 Word-boundary semantics:
   The masker (Layer 2) only replaces values at non-word-character
@@ -25,14 +25,14 @@ def validate(masked_text, entities, mask_map, strict_warnings=False):
 
     Args:
         masked_text:     the text after masking was applied
-        entities:        all detected entities (from regex + NER + LLM)
+        entities:        all detected entities (from every stage)
         mask_map:        the placeholder → original mapping
         strict_warnings: when True, Check 2's findings also fail the result.
                          Default False — see WHAT `passed` DOES NOT COVER.
 
     Returns:
         {
-            "passed": bool,           # True = safe to send to cloud
+            "passed": bool,           # True = safe to send to the provider
             "leaked": [...],          # entities still visible in output
             "warnings": [...],        # non-critical issues
             "warning_items": [...],   # the same, structured
@@ -53,7 +53,7 @@ def validate(masked_text, entities, mask_map, strict_warnings=False):
        the output". Check 2 scans for emails and internal IPs that NO stage
        detected, and by default those are warnings. A caller that gates on
        `passed` therefore forwards an email the pipeline never found. That is
-       the accepted reading of the recall number (§7), not an oversight: at
+       the accepted reading of the recall number, not an oversight: at
        gold recall 0.919 roughly one prose entity in twelve is missed, and
        failing on every missed email would refuse a large share of real
        traffic. `strict_warnings=True` inverts that choice for a caller who
@@ -64,7 +64,7 @@ def validate(masked_text, entities, mask_map, strict_warnings=False):
        CONSTRUCTION: validate() tests with the same word_boundary_pattern()
        the masker failed to match on, so every one of those passes at 100%
        coverage. A caller deciding whether it is safe to send must check
-       `masker_unmasked` AND `validation`. See DECISIONS §5.
+       `masker_unmasked` AND `validation`.
     """
     leaked = []
     warnings = []

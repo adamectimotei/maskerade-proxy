@@ -1,12 +1,11 @@
 """GLiNER detection stage — CPU-friendly alternative to Flair NER + LLM.
 
-STANDALONE / EXPERIMENTAL — nothing in pipeline/ imports this file.
-It is wired in at runtime by mask_bench.py via monkey-patch. Delete this
-file and mask_bench.py to revert completely; no other file is touched.
+Runs in the pipeline's detector slot (maskerade/pipeline.py, _run_detectors),
+in the full tier only; needs the [ner] extra. Switched by stages.gliner.
 
 Why this exists
 ---------------
-The production stack needs an RTX 4090: Flair ner-english-large on GPU
+The original GPU implementation needs an RTX 4090: Flair ner-english-large on GPU
 plus Qwen3:14b via Ollama. GLiNER is a bi-encoder NER model designed for
 CPU inference with runtime-specified labels — you tell it what entity
 types to look for at call time, no fine-tuning. That means it can cover
@@ -39,7 +38,7 @@ reporting only; nothing in the pipeline reads it.
 """
 import re
 
-# Module-level caches — same lazy-init pattern as pipeline/ner_stage.py
+# Module-level caches — lazily initialised on first use
 _model = None
 _model_key = None
 
@@ -149,7 +148,7 @@ _LENGTH_EXEMPT = {"CREDENTIAL", "API_KEY", "ACCOUNT_NUMBER", "CREDIT_CARD"}
 # What separates those from a real secret is that they are made of
 # English word segments and a secret is not. Two cheap language-level
 # signals capture it without a dictionary, and they are deliberately the
-# same ones keyval_stage.py uses for its bare-`key` value gate:
+# same ones stages/keyval.py uses for its bare-`key` value gate:
 #
 #   segment coverage  share of the string made of runs of >=2 same-case
 #                     letters — `eventTypes` is ~100%, an opaque token
@@ -189,7 +188,7 @@ _CAMEL_BOUNDARY = re.compile(r'[a-z][A-Z]')
 _SEGMENT_COVERAGE_MIN = 0.75
 # English permits 5-consonant clusters across syllable boundaries —
 # "length", "strength" — and i18n keys are full of them
-# (invalidPasswordMinLengthMessage). keyval_stage.py uses 4 for its
+# (invalidPasswordMinLengthMessage). stages/keyval.py uses 4 for its
 # bare-`key` value gate, where the tighter bound protects two more real
 # secrets; here 5 costs nothing measurable and catches the compounds.
 _CONSONANT_RUN_MAX = 5
@@ -422,8 +421,8 @@ def _get_model(config):
 # Chunking
 #
 # GLiNER encoders have a token limit (typically ~384). Long pentest
-# prompts must be split. Same offset-accumulator approach as
-# pipeline/ner_stage._run_flair_ner(), but bounded by char count
+# prompts must be split. Same offset-accumulator approach as the
+# original implementation's Flair chunker, but bounded by char count
 # rather than paragraph breaks alone, since HTTP dumps often have
 # no blank lines at all.
 # ──────────────────────────────────────────────────────────────
@@ -456,8 +455,8 @@ def _chunk(text, max_chars):
 #
 # The two libraries return different shapes, and gliner2's exact
 # structure is version-dependent. Rather than hard-code one shape,
-# normalize defensively into a flat list of dicts. Run
-# `mask_bench.py --gliner --dump-raw` on the first execution to see
+# normalize defensively into a flat list of dicts. If a new gliner2
+# version stops producing entities, print `raw` here first to see
 # what your installed version actually emits.
 # ──────────────────────────────────────────────────────────────
 
@@ -541,8 +540,8 @@ def gliner_detect(text, config, debug=False, notes=None):
     # name in prose will not be seen by this layer. The other four still see
     # it, and on HTTP traffic regex catches more names than gliner does.
     #
-    # Set to 0 to disable the gate — required when running bench/port_check.py,
-    # whose premise is span-for-span equality with the ungated GPU tree.
+    # Set to 0 to disable the gate — required for any span-for-span
+    # comparison against an ungated implementation.
     max_input_chars = int(gc.get("max_input_chars", 0) or 0)
     if max_input_chars and len(text) > max_input_chars:
         msg = (f"gliner declined input: {len(text)} chars > "
@@ -648,7 +647,7 @@ def gliner_detect(text, config, debug=False, notes=None):
                 start, end = span
 
             # No offsets returned — locate the string ourselves. Same
-            # fallback pipeline/llm_stage.py already uses.
+            # fallback the original implementation's LLM stage uses.
             if start is None:
                 start = chunk_text.find(ent_text)
                 if start == -1:
@@ -692,7 +691,7 @@ def gliner_detect(text, config, debug=False, notes=None):
             _lt = label_thresholds.get(entity_type)
             if _lt is not None and float(score) < _lt:
                 continue
-            # ── Filters — mirrors pipeline/ner_stage.py exactly ──
+            # ── Filters — mirror the original implementation's NER filters exactly ──
             stripped = ent_text.strip()
             if "\n" in ent_text or "|" in ent_text:
                 continue

@@ -11,7 +11,7 @@ your client (Claude Code, SDK)        maskerade, on 127.0.0.1         api.anthro
 "reset it for jan.novak@acmebank.cz" ◀── restore real values    ◀──  "reset it for [EMAIL_ADDRESS_1]"
 ```
 
-> **Status: alpha (0.1.0).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
+> **Status: alpha (0.1.1).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
 
 ---
 
@@ -51,7 +51,7 @@ Run it with `--tier full`. Startup takes noticeably longer while the model loads
 
 ### Docker
 
-Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.0` (fast tier, ~190 MB) and `0.1.0-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
+Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.1` (fast tier, ~190 MB) and `0.1.1-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
 
 ## Quick start with Claude Code
 
@@ -108,7 +108,34 @@ maskerade rules check .maskerade/rules.txt --against sample.txt
 | Speed | milliseconds per message | slower; the model runs on CPU |
 | Catches less of | free-text person and company names your rules don't list | very large bodies: the model skips inputs over 16 384 characters, the other detectors still run |
 
-Recall and precision for both tiers will be published together with a re-measurement on this release. Until then, treat detection as **good but not complete**, and put everything you know about the client in your rules file.
+### Measured detection (0.1.0, 25 Oct 2026)
+
+Measured with **no rules file**, which is the worst case; your rules only add to this. Two test sets, both private:
+
+- 30 annotated pentest prompts, 435 values: names, companies, hostnames, credentials, IDs
+- 1,060 HTTP requests and responses from open-source web apps, 1,909 values. 364 of these messages contain nothing sensitive.
+
+| | fast | full |
+|---|---|---|
+| Prompts: values masked | 81.6% | 92.0% |
+| Prompts: masked completely | 79.3% | 88.7% |
+| HTTP traffic: values masked | 94.8% | 95.7% |
+| HTTP traffic: masked completely | 94.5% | 95.1% |
+| Prompts: placeholders that hit a real value | 81.4% | 79.7% |
+| HTTP traffic: placeholders that hit a real value | 52.8% | 46.3% |
+| Time per message, laptop CPU (i7-1365U) | milliseconds | ~1.5 s for traffic, ~3-5 s for a prompt; up to ~20 s for large bodies |
+
+*Masked completely* also requires every word of a multi-word value to be masked: `Jan [PERSON_1]` counts as masked but not as completely masked.
+
+**What it misses most:**
+
+- In HTTP traffic, application-specific identifiers with no recognisable shape. These are 72 of the 83 misses.
+- In prompts, internal hostnames without a `.corp`/`.local`-style suffix.
+- On the fast tier, free-text person and company names: only 38% are caught without the model.
+
+**Over-masking is deliberate:** 160 of the 364 harmless HTTP messages still got at least one placeholder.
+
+**Caveat:** both test sets were built by the author, and the prompt set was also used during development. Treat these numbers as indicative, not independent. Put everything you know about the client in your rules file.
 
 ## Is it working?
 
@@ -189,6 +216,10 @@ python -m maskerade.warm [--full] [--to DIR] [--check]
 ```
 
 `--help` on any subcommand has the details. For an offline machine, run `python -m maskerade.warm --full --to DIR` on a connected one, copy the folder over, and set the variables it prints.
+
+## Security
+
+Report vulnerabilities privately, as described in [SECURITY.md](https://github.com/adamectimotei/maskerade-proxy/blob/main/SECURITY.md). Never include real client data in a report.
 
 ## Licence
 

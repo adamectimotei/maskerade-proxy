@@ -1,8 +1,7 @@
 """Key-driven value masking — structural stage.
 
-STANDALONE / EXPERIMENTAL — nothing in pipeline/ imports this file.
-It is wired in at runtime by benchmark.py. Delete this file and every
-other flag keeps working.
+Runs in the pipeline's detector slot (maskerade/pipeline.py, _run_detectors),
+in both tiers; switched by stages.keyval.
 
 The idea
 --------
@@ -1698,7 +1697,7 @@ def warmup(config):
 
 # ──────────────────────────────────────────────────────────────
 # Self-test — synthetic fixtures only, no corpus prompts.
-#   python3 tests/keyval_stage.py
+#   python -m maskerade.stages.keyval
 # ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ The idea
 Sensitive data has three orthogonal properties. A detector generalises only
 if it keys on one of them universally:
 
-    structural position   where it sits         -> keyval_stage.py
+    structural position   where it sits         -> stages/keyval.py
     semantic meaning      what it means         -> NER / LLM
     intrinsic form        what it *is*, math    -> THIS FILE
 
@@ -66,8 +66,8 @@ may emit IBAN / CREDIT_CARD / CRYPTO for the same span; those collapse to one
 mask_map entry, so no false-positive inflation. Measure this stage by recall
 delta, not attribution count.
 
-Config (config["form"], all optional; benchmark.py pushes --form-* here)
-------------------------------------------------------------------------
+Config (config["form"], all optional)
+-------------------------------------
     entropy_method       "bpe" | "shannon" | "both" | "off"   default "bpe"
                          bpe     -> BPE token efficiency only (PRODUCTION
                                     DEFAULT; 98.6% vs 70.4% recall on
@@ -799,7 +799,7 @@ def _oci_digest(val, text, start):
 # signature lives after the "?", so expansion from the signature stops at the
 # "=", the token holds no "/", and no veto fires. Verified against presigned
 # URLs, session ids in query strings, reset tokens as path segments, JWTs,
-# NTLM hashes and OAuth codes — see tests/test_asset_fingerprints.py.
+# NTLM hashes and OAuth codes.
 #
 # Extensions are script/style/image/font/media only. NOT .json, .html, .xml,
 # .pdf, .csv or .txt: those carry data, and a signed-CDN path such as
@@ -1209,7 +1209,7 @@ def warmup(config):
 
 # ══════════════════════════════════════════════════════════════════════
 # Self-test — synthetic valid values constructed from the standards, NOT the
-# corpus. Run:  python3 form_stage.py
+# corpus. Run:  python -m maskerade.stages.form
 # ══════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import sys
@@ -1312,7 +1312,7 @@ if __name__ == "__main__":
 
     # ══════════════════════════════════════════════════════════════════
     # Benign-format veto — every value below is constructed here from the
-    # standard, never lifted from tests/test_data/.
+    # standard, never lifted from a test corpus.
     # ══════════════════════════════════════════════════════════════════
     ecfg = {"form": {"entropy_method": "shannon"}}
 
@@ -1379,7 +1379,7 @@ if __name__ == "__main__":
     # identical to "BPE found nothing". These assertions fail loudly if that
     # ever recurs.
     # ══════════════════════════════════════════════════════════════════
-    # The pipeline runs whatever this constant says when config.yaml is silent.
+    # The pipeline runs whatever this constant says when the config is silent.
     check(ENTROPY_METHOD_DEFAULT == "bpe", "production default is BPE-only")
 
     # Fail-closed path (owner decision 2026-10-05): with no encoder, a

@@ -29,8 +29,8 @@ THE TWO EVIDENCE SOURCES
 ------------------------
 E1  LEGAL FORM
     The span carries a registered entity legal form from ISO 20275 /
-    the GLEIF Entity Legal Forms code list. Measured on
-    tests/test_data/org_probe_names.yaml: 212 of 232 real legal entities
+    the GLEIF Entity Legal Forms code list. Measured on a probe
+    fixture of published names: 212 of 232 real legal entities
     across CZ/SK/DE/AT/UK/PL/HU and 13 other jurisdictions, and ZERO of
     282 published technology terms — no tech product, security tool,
     standards body, protocol acronym, DOM/CSS token or generic noun in
@@ -85,16 +85,17 @@ allowlist_overrides.yaml's `exclude:` list is for.
 
 ATTRIBUTION
 -----------
-Per §6, this is a separately counted filter. It never edits gliner's
+This is a separately counted filter. It never edits gliner's
 output in place and never re-labels a span; it drops or keeps, and
 org_stats() reports where each proposal died. Folding it into
-gliner_stage would destroy attribution and let §0's layer-shadowing trap
-hide the real effect.
+stages/gliner.py would destroy attribution and let layer shadowing (one
+stage's effect credited to another) hide the real effect.
 
 SCOPE
 -----
-tests/ only. Nothing in pipeline/ changes. config.yaml may receive the
-additive `gliner.org_evidence` block; no pipeline code reads it.
+Runs after the detector slot (maskerade/pipeline.py, _run_detectors), in
+the full tier, and only when gliner is on. Configured by the
+`gliner.org_evidence` block in default_config.yaml.
 """
 import os
 import re
@@ -152,8 +153,8 @@ DEFAULTS = {
 #   Six Czech entities in the fixture miss E1 without them, including
 #   `Dopravní podnik hl. m. Prahy, akciová společnost`. The GLEIF ELF
 #   download carries the local-language full names alongside the
-#   abbreviations; tests/allowlist/build_elf.py generates them into
-#   elf_forms.yaml and this module prefers that file when present.
+#   abbreviations; a generated elf_forms.yaml is preferred when present.
+#   None ships in the package today, so the seed list below is what runs.
 # ══════════════════════════════════════════════════════════════
 
 # Seed list, used when elf_forms.yaml has not been generated. Head of the
@@ -290,9 +291,9 @@ def _load_elf(config):
     """Prefer the generated GLEIF list; fall back to the seed.
 
     A seeded run is correct but narrower — it will miss legal forms from
-    jurisdictions nobody hand-listed, which is exactly the §0 failure
-    mode ("would this hold on an app I have never seen?"). Generate the
-    real list with tests/allowlist/build_elf.py.
+    jurisdictions nobody hand-listed, which is exactly the generalisation
+    failure ("would this hold on an app I have never seen?"). A generated
+    GLEIF list removes that limit.
     """
     global _FORMS, _FORMS_KEY
     key = _elf_key(config)
@@ -353,7 +354,7 @@ _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 # PROVENANCE, stated plainly: this list is HAND-AUTHORED. It is ordinary
 # hostname and environment vocabulary, not a list of anything observed in
 # an engagement or read off an over-mask CSV — but it has no published
-# source either, and §0 is right to be suspicious of that. It is the
+# source either, and that deserves suspicion. It is the
 # weakest part of this module.
 #
 # It is narrower in effect than a detection vocabulary: an entry here can
@@ -363,7 +364,7 @@ _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 # argument that it is correct.
 #
 # The generic replacement, when someone has the corpus pass for it, is
-# §5(b): a token seen across many UNRELATED hosts is public infrastructure
+# per-host spread: a token seen across many UNRELATED hosts is public infrastructure
 # vocabulary, and a token confined to one host is that host's identity.
 # That needs no list and calibrates itself. Until then, treat every entry
 # here as an admission rather than a rule, and do not extend it by reading
@@ -479,12 +480,11 @@ def _domain_stems(host, min_len=4):
 # ──────────────────────────────────────────────────────────────
 # Corroboration context.
 #
-# In production the corroborating values are the chat's cumulative
-# mask_map plus the custom rules — Pipeline.run() has both. Inside the
-# benchmark the NER slot only receives (text, cfg), and by the time it
-# runs the regex stage has already replaced hostnames and emails with
-# placeholders, so they cannot be recovered from `text`. benchmark.py
-# therefore sets the raw case text here before each run.
+# The detector slot only receives (text, cfg), and by the time it runs
+# the regex stage has already replaced hostnames and emails with
+# placeholders, so they cannot be recovered from `text`. Pipeline.run()
+# therefore sets the raw text here before the slot runs (see
+# maskerade/pipeline.py).
 #
 # Falls back to scanning the text it is given, which is correct when the
 # regex layer is off and harmless when it is on (it simply finds less).
@@ -510,14 +510,14 @@ def _public_tokens(min_len=4):
     """Tokens from the published allowlist groups, used to stop a public
     third-party domain corroborating a public organisation name —
     github.com in the traffic must not make `GitHub` look like client
-    identity. Published sources only, per §0; this module never adds a
+    identity. Published sources only; this module never adds a
     term of its own."""
     # Keyed on min_token_len, which is configurable and changes the token
     # set. Unkeyed, a sweep over min_token_len silently reused the first
     # value's tokens for every later run. (The directory scan below is
-    # CWD-relative and currently finds nothing — §17 — so the set is empty
-    # in this build either way; the key is here so the cache stops being
-    # wrong the moment §17's per-source fix makes it non-empty.)
+    # CWD-relative and currently finds nothing, so the set is empty in
+    # this build either way; the key is here so the cache stops being
+    # wrong the moment a per-source fix makes it non-empty.)
     global _PUBLIC_TOKENS, _PUBLIC_TOKENS_KEY
     if _PUBLIC_TOKENS is not None and _PUBLIC_TOKENS_KEY == min_len:
         return _PUBLIC_TOKENS
@@ -724,7 +724,7 @@ def _contract_guard(entities):
 
 
 def report():
-    """Printed by benchmark.py after a run, alongside the other gates."""
+    """Print org_stats() for a measurement run."""
     st = org_stats()
     if not st["calls"]:
         return
@@ -770,7 +770,8 @@ def report():
 # ══════════════════════════════════════════════════════════════
 # Self-test — runs the fixture and the documented gold cases so a
 # regression in the regexes is visible without a GPU or a corpus run.
-#     python3 tests/org_evidence_stage.py
+# Needs the probe fixture, which lives in the development tree and does
+# not ship in the package.
 # ══════════════════════════════════════════════════════════════
 
 def _self_test():
@@ -778,11 +779,11 @@ def _self_test():
 
     Deliberately contains no string taken from the gold prompts or from an
     over-mask CSV. A self-test built from benchmark output becomes the
-    thing the code is tuned to pass, which is §0's failure mode wearing a
+    thing the code is tuned to pass, which is the generalisation failure wearing a
     test's clothes: it would go green on exactly the cases already seen
     and say nothing about an app nobody has run yet.
 
-    Populations come from tests/test_data/org_probe_names.yaml — real
+    Populations come from the probe fixture (not shipped) — real
     listed companies for the mask side, published project/standards/
     protocol vocabularies for the keep side, invented slugs where real
     ones cannot be published — plus synthetic corroboration text built

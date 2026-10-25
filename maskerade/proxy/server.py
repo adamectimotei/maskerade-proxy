@@ -35,14 +35,14 @@ Reporting it means three things, all of which happen here:
   - the names recorded on the session, so `maskerade sessions list` can
     answer "what did this engagement not inspect"
 
-Everything else still refuses. Decision record S12. Every "cannot complete"
+Everything else still refuses. Every "cannot complete"
 path refuses rather than degrades, because the operator's next action after a
 run is to send the text to a third party and a quietly degraded result is
 worse than an error. In this file that means:
 
   - warmup() is called at boot and allowed to propagate. A daemon that starts
     clean and then refuses every request is worse than one that refuses to
-    start (plan S2.2).
+    start.
   - a detected entity the masker could not substitute (`masker_unmasked`)
     refuses the request. The validator CANNOT see that set -- it tests with
     the same word-boundary predicate the masker failed on, so every one of
@@ -84,7 +84,7 @@ from .store import SessionStore, StoreError, prefix_hash
 UPSTREAM = "https://api.anthropic.com"
 
 # The OAuth token endpoint. MEASURED to be on the Messages API host, so
-# this proxy still talks to exactly one host (threat model S9.4).
+# this proxy still talks to exactly one host.
 #
 # A client on subscription auth -- which is what most operators use -- sends
 # its token refresh to whatever ANTHROPIC_BASE_URL names, so it arrives here.
@@ -93,7 +93,7 @@ UPSTREAM = "https://api.anthropic.com"
 #
 # It is forwarded verbatim: no masking, no inspection, no logging. The body
 # carries the operator's own refresh token, which is in the same class as
-# `x-api-key` (threat model S2 item 2) -- masking it would break auth, and
+# `x-api-key` -- masking it would break auth, and
 # writing it anywhere would be worse than anything this tool prevents.
 #
 # HOW THIS VALUE WAS ARRIVED AT, because the first answer was wrong
@@ -101,7 +101,7 @@ UPSTREAM = "https://api.anthropic.com"
 # It shipped on 2026-10-17 as `console.anthropic.com`, taken from published
 # descriptions of the flow rather than from a measurement, and the client
 # then failed to authenticate with a 403 Cloudflare interstitial. Measured
-# with bench/oauth_probe.py on 2026-10-18, three hosts x four header sets,
+# on 2026-10-18, three hosts x four header sets,
 # with a deliberately invalid token:
 #
 #   console.anthropic.com   403 at the WAF without a browser-like
@@ -116,17 +116,17 @@ UPSTREAM = "https://api.anthropic.com"
 #
 # So this is UPSTREAM, and that is the better answer for two reasons
 # beyond its working: the proxy keeps talking to one host, which is a claim
-# a client can check in ten seconds (S9.4), and the header allowlist below
+# a client can check in ten seconds, and the header allowlist below
 # stays an allowlist -- forwarding the client's User-Agent and SDK headers
 # to reach `platform.claude.com` would have widened what this proxy
 # discloses, for no gain.
 #
 # The residual: `api.anthropic.com` serving this path is a measurement, not
 # a documented guarantee. If subscription auth stops working through the
-# proxy, re-run bench/oauth_probe.py -- it re-answers exactly this question
-# -- and this is the one line to change. Pointing it at
-# `platform.claude.com` also needs the User-Agent forwarded, which is why
-# the probe reports the header set as well as the host.
+# proxy, repeat that measurement -- an invalid refresh token POSTed to each
+# candidate host, with and without a User-Agent -- and this is the one line
+# to change. Pointing it at `platform.claude.com` also needs the User-Agent
+# forwarded, which is why the header set matters as much as the host.
 OAUTH_UPSTREAM = UPSTREAM
 
 # Forwarded to the provider untouched. Everything else the client sends is
@@ -166,8 +166,8 @@ PASSTHROUGH_POST = {"/v1/oauth/token": OAUTH_UPSTREAM}
 MAX_BODY_BYTES = 64 * 1024 * 1024
 
 # An HTTP header cannot carry 350 paths, so X-Maskerade-Unscanned carries
-# deduplicated short NAMES and says how many it left out. The full paths are
-# what the operator gets from `bench/diag_fields.py`.
+# deduplicated short NAMES and says how many it left out. Full paths are
+# deliberately not put in a header.
 UNSCANNED_MAX_NAMES = 20
 UNSCANNED_MAX_CHARS = 200
 
@@ -191,7 +191,7 @@ class Masker:
         # The engagement label, from --engagement. When set it is the
         # session id for every request this daemon serves: one bucket per
         # engagement, so `sessions purge --session <label>` deletes exactly
-        # that engagement and nothing else (threat model S4.5). Since
+        # that engagement and nothing else. Since
         # 2026-10-18 it is a NAMESPACE rather than a bypass -- store.py's
         # resolve_prefix still runs the prefix scan inside it, so the cache
         # is live from turn 2 instead of disabled.
@@ -756,7 +756,7 @@ def _unmask_tree(node, mask_map, leftovers):
 
 
 def _info_headers(info):
-    """Degradation reaches the client, or it does not exist (plan S4.4)."""
+    """Degradation reaches the client, or it does not exist."""
     h = {
         "X-Maskerade-Mode": info["mode"],
         "X-Maskerade-Session": "%s; %s" % (
@@ -872,8 +872,8 @@ def _warn_no_rules(args, store):
     WARNING, NOT A REFUSAL, and that is deliberate. An operator may mean to
     run a labelled session with no rules -- a scratch engagement, a
     reproduction, a client whose name is genuinely not in the traffic. A
-    refusal that removes the tool from the path protects nobody: threat
-    model S8.3, which is the whole reason the unknown-field refusal was
+    refusal that removes the tool from the path protects nobody, which is
+    the whole reason the unknown-field refusal was
     abandoned on 2026-10-17. Fail-closed stays for a stage that cannot RUN;
     an absent operator rules file is not that.
     """

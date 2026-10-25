@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unmasking a streaming response, without destroying the reason to stream.
 
-Week 4 plan S4.1. SSE responses arrive token by token, so a placeholder
+SSE responses arrive token by token, so a placeholder
 splits across chunks: `[PERSON_NA` lands in one delta and `ME_1]` in the next.
 Unmasking per chunk cannot work.
 
