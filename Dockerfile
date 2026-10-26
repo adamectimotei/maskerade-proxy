@@ -1,13 +1,13 @@
 # maskerade -- localhost masking proxy for the Anthropic API.
 #
-#   docker build --target light -t maskerade:0.1.1 .
-#   docker build --target ner   -t maskerade:0.1.1-ner .
+#   docker build --target light -t maskerade:0.1.2 .
+#   docker build --target ner   -t maskerade:0.1.2-ner .
 #
 # Run it with docker-compose.yml, or by hand:
 #
 #   docker volume create maskerade-state
 #   docker run -d --name maskerade -p 127.0.0.1:8787:8787 \
-#       -v maskerade-state:/var/lib/maskerade ghcr.io/adamectimotei/maskerade:0.1.1
+#       -v maskerade-state:/var/lib/maskerade ghcr.io/adamectimotei/maskerade:0.1.2
 #
 # THE BIND, READ THIS ONCE
 # ------------------------
@@ -26,7 +26,7 @@
 #
 # WHAT IS NOT IN THE IMAGE
 # ------------------------
-# The BPE encoder (cl100k_base, ~1.7 MB). It has no redistribution licence of
+# The BPE encoder (cl100k_base, ~1.6 MB). It has no redistribution licence of
 # its own (maskerade/warm.py), so it is fetched on first start into the
 # state volume and verified against its published sha256. The light image
 # therefore needs network once; every later start is offline.
@@ -49,7 +49,7 @@ RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /dist .
 # ---------------------------------------------------------------- base --
 FROM ${PYTHON_IMAGE} AS base
 
-ARG VERSION=0.1.1
+ARG VERSION=0.1.2
 LABEL org.opencontainers.image.title="maskerade" \
       org.opencontainers.image.description="Local masking proxy for the Anthropic API: client data is replaced with placeholders before a request leaves the machine, and restored in the reply." \
       org.opencontainers.image.source="https://github.com/adamectimotei/maskerade-proxy" \

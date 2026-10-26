@@ -21,7 +21,7 @@ Two tiers:
 
 Both tiers need the BPE encoder, because `form` is in both:
 
-    python -m maskerade.warm         # ~1.7 MB, once, with network
+    python -m maskerade.warm         # ~1.6 MB, once, with network
 
 That is not optional. form fails closed without it, and fail-closed means the
 proxy does not start.
@@ -44,4 +44,4 @@ __all__ = [
     "Pipeline", "DetectorError",
     "TIER_FAST", "TIER_FULL", "TIERS", "STAGE_KEYS", "DEFAULT_TIER",
 ]
-__version__ = "0.1.1"
+__version__ = "0.1.2"

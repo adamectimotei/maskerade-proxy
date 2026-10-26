@@ -11,7 +11,7 @@ your client (Claude Code, SDK)        maskerade, on 127.0.0.1         api.anthro
 "reset it for jan.novak@acmebank.cz" ◀── restore real values    ◀──  "reset it for [EMAIL_ADDRESS_1]"
 ```
 
-> **Status: alpha (0.1.1).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
+> **Status: alpha (0.1.2).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
 
 ---
 
@@ -31,11 +31,11 @@ Python 3.11 or newer.
 
 ```bash
 pip install maskerade
-python -m maskerade.warm          # one-time: fetches the 1.7 MB BPE encoder, checksum-verified
+python -m maskerade.warm          # one-time: fetches the 1.6 MB BPE encoder, checksum-verified
 maskerade --version
 ```
 
-`warm` is required: the entropy detector needs that encoder, and without it the proxy refuses to start rather than run with a weaker detector.
+`warm` is required: the entropy detector needs that encoder, and without it the proxy refuses to start rather than run with a weaker detector. Behind a proxy, set `HTTPS_PROXY` for this command; for a machine with no internet access at all, see the end of [Command reference](#command-reference).
 
 ### Full tier (adds the NER model)
 
@@ -51,7 +51,7 @@ Run it with `--tier full`. Startup takes noticeably longer while the model loads
 
 ### Docker
 
-Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.1` (fast tier, ~190 MB) and `0.1.1-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
+Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.2` (fast tier, ~190 MB) and `0.1.2-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
 
 ## Quick start with Claude Code
 
@@ -172,9 +172,16 @@ Sessions unused for 30 days are deleted when the proxy starts (`--retention-days
 
 ## Docker
 
+From the engagement directory, with [docker-compose.yml](https://github.com/adamectimotei/maskerade-proxy/blob/main/docker-compose.yml) from this repository:
+
 ```bash
-docker compose up -d     # with docker-compose.yml from this repository
+export MASKERADE_ENGAGEMENT=eng-2026-014                  # bash
+$env:MASKERADE_ENGAGEMENT = "eng-2026-014"                # PowerShell
+
+docker compose -f path/to/docker-compose.yml --project-directory . up -d
 ```
+
+The compose file refuses to start without `MASKERADE_ENGAGEMENT`. It mounts `./.maskerade` from the engagement directory read-only, so the container picks up the rules file that `maskerade init` writes there; without pip on the host, create `.maskerade/rules.txt` by hand (see [Custom rules](#custom-rules-the-clients-own-identity)). For the full tier, switch to the `-ner` image and add `--tier full`, as the comments in the file show.
 
 The proxy refuses to listen anywhere but loopback unless given `--allow-remote`. Inside a container a loopback-only proxy is unreachable from the host, so **the image listens on all interfaces inside the container, and the port publish is what keeps it on your machine**:
 
@@ -187,7 +194,7 @@ The proxy has no authentication, holds your mask maps and restores real values, 
 
 - Other containers on the **same Docker network** can reach the proxy. Don't attach it to networks shared with things you don't trust.
 - Keep mask maps in a **named volume** (the compose file does). The proxy refuses a bind-mounted directory it cannot restrict to its own user.
-- The first start downloads the 1.7 MB encoder into the volume. Later starts, including the NER image's, need no network beyond `api.anthropic.com`.
+- The first start downloads the 1.6 MB encoder into the volume. Later starts, including the NER image's, need no network beyond `api.anthropic.com`.
 - The images are tested on Linux with Docker Engine. Docker Desktop on Windows and macOS is not tested yet.
 
 ## What it does not do
@@ -207,15 +214,15 @@ Read this before you depend on it.
 ```
 maskerade init --engagement NAME [--client NAME ...] [--domain DOMAIN ...]
 maskerade proxy [--engagement NAME] [--tier fast|full] [--port 8787]
-                [--custom-rules FILE] [--state-dir DIR] [--retention-days 30]
-                [--no-system-note | --system-note FILE]
+                [--custom-rules FILE] [--config FILE] [--state-dir DIR]
+                [--retention-days 30] [--no-system-note | --system-note FILE]
 maskerade rules check FILE [--against SAMPLE]
 maskerade sessions list | purge (--all | --older-than Nd | --session ID) [--yes]
 maskerade --version
-python -m maskerade.warm [--full] [--to DIR] [--check]
+python -m maskerade.warm [--full] [--to DIR] [--check] [--traceback]
 ```
 
-`--help` on any subcommand has the details. For an offline machine, run `python -m maskerade.warm --full --to DIR` on a connected one, copy the folder over, and set the variables it prints.
+`--help` on any subcommand has the details. `--config FILE` replaces the packaged detection config rather than merging with it, so start from a copy of `maskerade/default_config.yaml`. For an offline machine, run `python -m maskerade.warm --full --to DIR` on a connected one, copy the folder over, and set the variables it prints.
 
 ## Security
 

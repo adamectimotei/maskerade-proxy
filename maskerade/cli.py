@@ -141,7 +141,7 @@ def cmd_version():
 
     if DEFAULT_TIER != "full" and ner_available():
         print("  note          the 'ner' extra is installed, so tier 'full' "
-              "(C2) is available.")
+              "(adds the GLiNER model) is available.")
         print("                It is NOT the default: pass --tier full to "
               "run it.")
     elif DEFAULT_TIER == "full" and not ner_available():

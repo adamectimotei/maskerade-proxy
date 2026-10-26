@@ -6,8 +6,10 @@
 # and is deliberately absent here — if this file ever needs one of those
 # keys back, the package boundary has leaked.
 #
-# `maskerade init` writes a copy you can edit; this one ships read-only
-# inside the wheel.
+# To change a setting, copy this file, edit the copy, and run
+# `maskerade proxy --config COPY`. The copy REPLACES this file rather than
+# being merged with it, so start from the whole file. This one ships inside
+# the package and is overwritten on every upgrade.
 
 # =============================================================================
 # Anonymization Pipeline — Configuration

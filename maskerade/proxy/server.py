@@ -6,7 +6,8 @@
 
 Point any Anthropic client at it and nothing else changes:
 
-    $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"
+    export ANTHROPIC_BASE_URL=http://127.0.0.1:8787          (bash/zsh)
+    $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"        (PowerShell)
 
 WHAT IT DOES, IN ORDER
 ----------------------
@@ -66,8 +67,10 @@ session id and counts. On a refusal the offending field's PATH is logged, its
 value is not.
 """
 import argparse
+import errno
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -966,16 +969,103 @@ def build(args):
         if ner_available():
             sys.stderr.write(
                 "  [TIER] running '%s'. maskerade[ner] IS installed, so "
-                "tier 'full' (C2) is\n"
-                "         available on this machine and is NOT what is "
-                "running. Pass --tier full\n"
-                "         if you meant C2.\n" % args.tier)
+                "tier 'full' (adds the GLiNER\n"
+                "         model) is available on this machine and is NOT "
+                "what is running. Pass\n"
+                "         --tier full if you meant it.\n" % args.tier)
 
     # Allowed to propagate. A daemon that starts clean and refuses every
     # request is worse than one that refuses to start.
     pipeline.warmup()
     return Masker(pipeline, store, system_note=note, rules=rules,
                   engagement=args.engagement)
+
+
+class _Server(ThreadingHTTPServer):
+    """The listening socket, owned exclusively.
+
+    http.server sets SO_REUSEADDR. On Linux and macOS that only permits a
+    quick restart over sockets still in TIME_WAIT. On WINDOWS it means
+    something else entirely: a second process that also sets it can bind
+    the same address and port while the first is still listening, and
+    Windows then decides which of the two receives each connection. Two
+    `maskerade proxy` instances on 8787 would both start, serve
+    interleaved requests, and each hold its own in-process session locks --
+    and store.py's concurrency design rests on the port being the mutex
+    that prevents exactly that. SO_EXCLUSIVEADDRUSE restores it: the second
+    bind fails, and the operator is told why.
+    """
+
+    daemon_threads = True
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET,
+                                   socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _make_server(host, port):
+    """Bind, choosing the address family from the host.
+
+    ThreadingHTTPServer is IPv4-only by default, so `--host ::1` -- which
+    the loopback check accepts -- used to fail with a raw traceback.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    cls = type("MaskeradeServer", (_Server,), {"address_family": family})
+    return cls((host, port), Handler)
+
+
+def _client_hint(host, port):
+    """Both shells' syntax, aligned. Printed whatever the OS: in a container
+    the process is on Linux while the operator's shell is often PowerShell."""
+    url = "http://%s:%d" % (host, port)
+    rows = (("export ANTHROPIC_BASE_URL=%s" % url, "(bash/zsh)"),
+            ("$env:ANTHROPIC_BASE_URL = \"%s\"" % url, "(PowerShell)"))
+    width = max(len(cmd) for cmd, _ in rows) + 3
+    return "\n".join("      %s%s" % (cmd.ljust(width), note)
+                     for cmd, note in rows) + "\n"
+
+
+def _url_host(host):
+    """`host` as it appears in a URL: an IPv6 literal needs brackets."""
+    return "[%s]" % host if ":" in host else host
+
+
+# EADDRINUSE / WSAEADDRINUSE, and EACCES / WSAEACCES -- the second is what
+# Windows reports for a port held exclusively by another process or inside
+# a range the system has reserved (Hyper-V and WSL reserve whole ranges).
+_IN_USE = {errno.EADDRINUSE, 10048}
+_DENIED = {errno.EACCES, 10013}
+_NOT_HERE = {errno.EADDRNOTAVAIL, 10049}
+
+
+def _bind_failure(host, port, e):
+    code = getattr(e, "winerror", None) or e.errno
+    reason = e.strerror or str(e)
+    out = ["\n  cannot listen on %s:%d: %s\n" % (_url_host(host), port, reason)]
+    if code in _IN_USE:
+        out.append("  Something is already listening on this port -- most "
+                   "likely another\n"
+                   "  maskerade proxy. Stop it, or start this one with "
+                   "--port <other> and\n"
+                   "  point the client at that port.\n")
+    elif code in _DENIED:
+        out.append("  Permission denied. Either the port is privileged (below "
+                   "1024 on Linux\n"
+                   "  and macOS), or another program holds it exclusively, or "
+                   "it lies in a\n"
+                   "  range the system reserves (Windows: `netsh int ipv4 "
+                   "show\n"
+                   "  excludedportrange protocol=tcp` lists them). Pick "
+                   "another with --port.\n")
+    elif code in _NOT_HERE:
+        out.append("  %s is not an address of this machine.\n" % host)
+    elif isinstance(e, socket.gaierror):
+        out.append("  %s is not an address this machine can listen on.\n"
+                   % host)
+    return "".join(out)
 
 
 def main(argv=None):
@@ -985,9 +1075,14 @@ def main(argv=None):
     # module for any other reason still costs nothing.
     from maskerade.pipeline import DEFAULT_TIER
 
-    ap = argparse.ArgumentParser(prog="python -m maskerade.proxy.server")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8787)
+    # `maskerade proxy` forwards here verbatim (cli.py), and that is the
+    # name an operator typed, so it is the name the usage line shows.
+    ap = argparse.ArgumentParser(prog="maskerade proxy")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="address to listen on (default 127.0.0.1). Anything "
+                         "but loopback is refused without --allow-remote.")
+    ap.add_argument("--port", type=int, default=8787,
+                    help="port to listen on (default 8787)")
     ap.add_argument("--allow-remote", action="store_true",
                     help="permit a non-loopback bind (see the refusal text)")
     # Follows the PACKAGE default rather than restating it. A second copy of
@@ -996,11 +1091,20 @@ def main(argv=None):
     # run a different detector set from the library in the same install, and
     # both would report themselves as correct.
     ap.add_argument("--tier", choices=["fast", "full"], default=DEFAULT_TIER,
-                    help="detector set to run (default %s). 'full' is C2 and "
-                         "needs maskerade[ner]." % DEFAULT_TIER)
-    ap.add_argument("--config", default=None)
-    ap.add_argument("--state-dir", default=None)
-    ap.add_argument("--retention-days", type=int, default=30)
+                    help="detector set to run (default %s). 'full' adds the "
+                         "local GLiNER model for names and organisations, "
+                         "and needs maskerade[ner]." % DEFAULT_TIER)
+    ap.add_argument("--config", default=None, metavar="FILE",
+                    help="detection config to use INSTEAD of the packaged "
+                         "default_config.yaml (it replaces it; it is not "
+                         "merged). Start from a copy of that file.")
+    ap.add_argument("--state-dir", default=None, metavar="DIR",
+                    help="where mask maps are stored (default: "
+                         "MASKERADE_STATE_DIR, or the per-OS state "
+                         "directory)")
+    ap.add_argument("--retention-days", type=int, default=30, metavar="N",
+                    help="at startup, delete sessions unused for N days "
+                         "(default 30)")
     ap.add_argument("--engagement", default=None, metavar="NAME",
                     help="put every request in one named session. This is "
                          "what makes `maskerade sessions purge --session "
@@ -1044,15 +1148,25 @@ def main(argv=None):
             % args.host)
         return 2
 
+    # Bound BEFORE build(), which loads the detectors -- up to a minute for
+    # the full tier. A port that is already taken is then reported in a
+    # second rather than after the model load, and as a sentence rather than
+    # the raw OSError it used to escape as. Nothing is served until
+    # serve_forever() below, so binding early changes no request handling.
+    try:
+        httpd = _make_server(args.host, args.port)
+    except OSError as e:
+        sys.stderr.write(_bind_failure(args.host, args.port, e))
+        return 2
+
     try:
         masker = build(args)
     except Exception as e:
+        httpd.server_close()
         sys.stderr.write("\n  cannot start: %s: %s\n" % (type(e).__name__, e))
         return 2
 
     Handler.masker = masker
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    httpd.daemon_threads = True
 
     # The bind line used to say "(loopback only)" unconditionally, which is
     # false under --allow-remote -- and the container image runs with
@@ -1076,7 +1190,8 @@ def main(argv=None):
             "network." % (args.port, args.port))
         # 0.0.0.0 is not an address a client can connect to. For a wildcard
         # bind the useful hint is the host side of a loopback publish.
-        client_host = ("127.0.0.1" if args.host in ("0.0.0.0", "::", "")
+        client_host = ("127.0.0.1" if args.host in ("0.0.0.0", "")
+                       else "::1" if args.host == "::"
                        else args.host)
 
     sys.stderr.write(
@@ -1089,14 +1204,15 @@ def main(argv=None):
         "    custom rule %s\n"
         "    system note %s\n\n"
         "    point a client at it:\n"
-        "      $env:ANTHROPIC_BASE_URL = \"http://%s:%d\"\n\n"
-        % (args.host, args.port, bind_note, masker.pipeline.mode_string(),
+        "%s\n"
+        % (_url_host(args.host), args.port, bind_note,
+           masker.pipeline.mode_string(),
            UPSTREAM,
            masker.store.root, masker.store.retention_days,
            args.engagement or "none (derived from the conversation prefix)",
            masker.rules.summary(),
            masker.system_note.source,
-           client_host, args.port))
+           _client_hint(_url_host(client_host), args.port)))
     sys.stderr.flush()
 
     try:

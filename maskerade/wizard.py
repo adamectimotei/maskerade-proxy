@@ -863,6 +863,25 @@ def _verify(rules_path, entries):
     return True
 
 
+def _proxy_tier_flag():
+    """` --tier full` when this install can run the full tier, else "".
+
+    find_spec only (maskerade._extras), so asking costs a light install
+    nothing. Any failure to answer means "", the default tier: a command
+    that runs beats one that names a tier this install may not have.
+    """
+    try:
+        from ._extras import ner_available
+        return " --tier full" if ner_available() else ""
+    except Exception:
+        return ""
+
+
+def _quote(path):
+    """Quote a path for a command line the operator will copy."""
+    return '"%s"' % path if any(c.isspace() for c in path) else path
+
+
 def _closing(engagement, rules_path, args):
     # The ABSOLUTE path, and the `cd` with it. This printed a path relative
     # to the CURRENT directory until 2026-10-19, which was wrong twice over
@@ -874,18 +893,29 @@ def _closing(engagement, rules_path, args):
     # where the file is. An operator who starts it elsewhere gets no custom
     # rules at all, and the only signal is one word on the banner.
     eng_dir = os.path.dirname(os.path.dirname(os.path.abspath(rules_path)))
+    tier = _proxy_tier_flag()
     _say("")
     _say("  Start the proxy for this engagement, FROM this directory:")
-    _say("    cd %s" % eng_dir)
-    _say("    maskerade proxy --engagement %s --tier full" % engagement)
+    _say("    cd %s" % _quote(eng_dir))
+    _say("    maskerade proxy --engagement %s%s" % (engagement, tier))
+    if not tier:
+        # Printed instead of `--tier full`, which used to be unconditional:
+        # on a light install that command fails closed at warmup, so the
+        # first thing a new operator copied out of this wizard did not run.
+        _say("")
+        _say("    That is the fast tier, the only one this install can run. "
+             "The full tier")
+        _say("    adds a local model for names and organisations; see "
+             "\"Full tier\" in the")
+        _say("    README, then add --tier full.")
     _say("")
     _say("    The proxy looks for %s in the directory it is started from, "
          "so" % os.path.join(RULES_DIRNAME, RULES_BASENAME))
     _say("    that `cd` is load-bearing. To run it from anywhere else, name "
          "the file:")
     _say("")
-    _say("      maskerade proxy --engagement %s --tier full --custom-rules "
-         "\"%s\"" % (engagement, rules_path))
+    _say("      maskerade proxy --engagement %s%s --custom-rules "
+         "\"%s\"" % (engagement, tier, rules_path))
     _say("")
     _say("    Either way the banner's `custom rule` line says which file won. "
          "If it")

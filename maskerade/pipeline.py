@@ -169,6 +169,34 @@ def _emails_cut_by_rules(text, custom_masks, config):
     return out
 
 
+def _warmup_remedies(names):
+    """What to do about each failed stage, for the DetectorError message.
+
+    Per stage, because the old single sentence gave every failure the same
+    advice -- `warm --full` and a library-only `stages_override=` -- which
+    was wrong for the commonest case: a fast-tier install that has not run
+    `python -m maskerade.warm` yet, and needs neither the model nor Python.
+    """
+    out = []
+    if "form" in names:
+        out.append("  form:   fetch the BPE encoder once, with network: "
+                   "python -m maskerade.warm")
+    if "gliner" in names:
+        out.append("  gliner: the full tier needs the 'ner' extra and its "
+                   "model (pip install \"maskerade[ner]\", then "
+                   "python -m maskerade.warm --full), or run the fast tier "
+                   "(the default; drop --tier full)")
+    other = [n for n in names if n not in ("form", "gliner")]
+    if other:
+        out.append("  %s: these ship with maskerade itself; reinstall it "
+                   "(pip install --force-reinstall maskerade) and report the "
+                   "error above if it persists" % ", ".join(other))
+    out.append("To run without a stage on purpose, switch it off explicitly: "
+               "a --config file with `stages: {<stage>: false}`, or "
+               "stages_override={'<stage>': False} from Python.")
+    return "\n".join(out)
+
+
 class DetectorError(RuntimeError):
     """A stage was enabled but could not run.
 
@@ -849,11 +877,9 @@ class Pipeline:
                 "warmup failed for %d enabled stage(s):%s\n"
                 "Each of these stages is enabled, so each would fail again "
                 "on the first message - with the output under-masked and the "
-                "mode string still naming the stage. Install what they need "
-                "(python -m maskerade.warm --full), or switch them off "
-                "explicitly (stages_override={'<stage>': False}, or "
-                "tier='fast') if you mean to run without them."
-                % (len(failures), lines))
+                "mode string still naming the stage.\n%s"
+                % (len(failures), lines,
+                   _warmup_remedies([n for n, _t, _m in failures])))
     # ── span reconciliation (copied verbatim — must not drift) ───────────
 
     @staticmethod
