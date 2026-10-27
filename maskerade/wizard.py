@@ -927,6 +927,24 @@ def _closing(engagement, rules_path, args):
          "restart,")
     _say("    and keeps the last good list if an edit does not parse.")
     _say("")
+    # Measured 2026-10-27: the desktop app's Code tab, opened on a folder this
+    # command had prepared, answered normally while the proxy logged nothing.
+    # The app does not read .claude/settings.local.json, and an operator who
+    # opens the engagement folder there would believe it is protected.
+    _say("  Which clients this covers:")
+    _say("")
+    _say("    The settings file above points the `claude` command-line tool at "
+         "the proxy.")
+    _say("    The Claude DESKTOP APP does not read it. Signed in with a Claude "
+         "account,")
+    _say("    nothing in the desktop app goes through maskerade -- not Chat, not "
+         "Cowork,")
+    _say("    and not the Code tab, even in this folder. The desktop app works "
+         "only in its")
+    _say("    third-party mode with an Anthropic API key; see \"Claude desktop "
+         "app\" in the")
+    _say("    README.")
+    _say("")
     _say("  Delete everything from this engagement, later:")
     _say("    maskerade sessions purge --session %s" % engagement)
     _say("")

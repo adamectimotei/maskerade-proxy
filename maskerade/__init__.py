@@ -44,4 +44,4 @@ __all__ = [
     "Pipeline", "DetectorError",
     "TIER_FAST", "TIER_FULL", "TIERS", "STAGE_KEYS", "DEFAULT_TIER",
 ]
-__version__ = "0.1.2"
+__version__ = "0.1.3"

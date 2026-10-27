@@ -11,7 +11,7 @@ your client (Claude Code, SDK)        maskerade, on 127.0.0.1         api.anthro
 "reset it for jan.novak@acmebank.cz" ◀── restore real values    ◀──  "reset it for [EMAIL_ADDRESS_1]"
 ```
 
-> **Status: alpha (0.1.2).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
+> **Status: alpha (0.1.3).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
 
 ---
 
@@ -24,6 +24,16 @@ your client (Claude Code, SDK)        maskerade, on 127.0.0.1         api.anthro
 - **Fails closed.** If a detector cannot run, or a detected value cannot be masked, the request is refused, never forwarded unmasked.
 
 Everything runs locally on the CPU. No GPU, no model server, no account.
+
+## Supported clients
+
+| Client | Through maskerade? |
+|---|---|
+| **`claude` command-line tool (Claude Code)** | **Yes**, with a Claude subscription login or an API key. This is the main use; see [Quick start](#quick-start-with-claude-code). |
+| **Claude desktop app in third-party mode** | **Yes**, with an Anthropic API key only (subscriptions don't work in this mode). See [Claude desktop app](#claude-desktop-app). |
+| Claude desktop app signed in with a Claude account | **No.** Chat, Cowork and the Code tab all talk to Anthropic directly, even in a folder `maskerade init` prepared. |
+| claude.ai in a browser | **No.** |
+| Anything else that speaks the Messages API (SDKs, scripts) | **Yes**, by setting `ANTHROPIC_BASE_URL`. |
 
 ## Install
 
@@ -51,7 +61,7 @@ Run it with `--tier full`. Startup takes noticeably longer while the model loads
 
 ### Docker
 
-Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.2` (fast tier, ~190 MB) and `0.1.2-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
+Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.3` (fast tier, ~190 MB) and `0.1.3-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
 
 ## Quick start with Claude Code
 
@@ -61,7 +71,7 @@ From the directory you'll work in for the engagement:
 maskerade init --engagement eng-2026-014
 ```
 
-`init` asks for the client's names and domains and writes them to `.maskerade/rules.txt`. It points Claude Code at the proxy through `.claude/settings.local.json`, and warns you about places the client's name already appears in clear text (the folder path, git remote, branch). It writes no credentials anywhere.
+`init` asks for the client's names and domains and writes them to `.maskerade/rules.txt`. It points the `claude` command-line tool at the proxy through `.claude/settings.local.json` (the desktop app ignores that file; see [Supported clients](#supported-clients)), and warns you about places the client's name already appears in clear text (the folder path, git remote, branch). It writes no credentials anywhere.
 
 Then start the proxy **from that same directory** and use Claude Code as usual:
 
@@ -78,6 +88,21 @@ $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"          # PowerShell
 ```
 
 Your API key, or your Claude subscription login, works unchanged; the proxy passes your credentials through and never stores or logs them.
+
+### Claude desktop app
+
+Only in the app's **third-party mode**, which sends Chat, Cowork and Code to a gateway you choose, and only with an **Anthropic API key**: usage is billed to the API, not to a Claude subscription. Tested with the Code tab.
+
+1. Start the proxy from the engagement directory, as above.
+2. In the app: **Help → Troubleshooting → Enable Developer Mode**, then **Developer → Configure Third-Party Inference…**
+3. Under **Connection**, set:
+   - **Inference provider:** Gateway
+   - **Gateway base URL:** `http://127.0.0.1:8787`
+   - **Gateway API key:** your Anthropic API key
+   - **Gateway auth scheme:** x-api-key
+4. **Apply Changes**, then **Save & Restart**, and on the sign-in screen start with the third-party configuration.
+
+To go back to your normal setup, choose the Anthropic sign-in on the sign-in screen. Signed in that way, nothing in the app goes through maskerade.
 
 ## Custom rules: the client's own identity
 
