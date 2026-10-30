@@ -11,7 +11,7 @@ your client (Claude Code, SDK)        maskerade, on 127.0.0.1         api.anthro
 "reset it for jan.novak@acmebank.cz" ◀── restore real values    ◀──  "reset it for [EMAIL_ADDRESS_1]"
 ```
 
-> **Status: alpha (0.1.3).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
+> **Status: alpha (0.1.4).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
 
 ---
 
@@ -61,7 +61,7 @@ Run it with `--tier full`. Startup takes noticeably longer while the model loads
 
 ### Docker
 
-Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.3` (fast tier, ~190 MB) and `0.1.3-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
+Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.4` (fast tier, ~190 MB) and `0.1.4-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
 
 ## Quick start with Claude Code
 

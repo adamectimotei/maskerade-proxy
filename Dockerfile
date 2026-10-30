@@ -1,13 +1,13 @@
 # maskerade -- localhost masking proxy for the Anthropic API.
 #
-#   docker build --target light -t maskerade:0.1.3 .
-#   docker build --target ner   -t maskerade:0.1.3-ner .
+#   docker build --target light -t maskerade:0.1.4 .
+#   docker build --target ner   -t maskerade:0.1.4-ner .
 #
 # Run it with docker-compose.yml, or by hand:
 #
 #   docker volume create maskerade-state
 #   docker run -d --name maskerade -p 127.0.0.1:8787:8787 \
-#       -v maskerade-state:/var/lib/maskerade ghcr.io/adamectimotei/maskerade:0.1.3
+#       -v maskerade-state:/var/lib/maskerade ghcr.io/adamectimotei/maskerade:0.1.4
 #
 # THE BIND, READ THIS ONCE
 # ------------------------
@@ -49,7 +49,7 @@ RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /dist .
 # ---------------------------------------------------------------- base --
 FROM ${PYTHON_IMAGE} AS base
 
-ARG VERSION=0.1.3
+ARG VERSION=0.1.4
 LABEL org.opencontainers.image.title="maskerade" \
       org.opencontainers.image.description="Local masking proxy for the Anthropic API: client data is replaced with placeholders before a request leaves the machine, and restored in the reply." \
       org.opencontainers.image.source="https://github.com/adamectimotei/maskerade-proxy" \

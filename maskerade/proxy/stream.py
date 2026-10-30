@@ -54,6 +54,11 @@ import json
 import re
 
 
+# A lone UTF-16 surrogate. json.loads() turns a "\\ud83d" escape into one, and
+# a client that cuts a tool output inside an emoji sends exactly that, so a
+# masked value -- and therefore an unmasked reply -- can contain one.
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
 # A COMPLETE placeholder: [TYPE_1]. Mirrors masker._CONTAINS_PLACEHOLDER_RE.
 PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9_]*_\d+\]")
 
@@ -275,8 +280,20 @@ class SSEUnmasker:
 
     @staticmethod
     def _event(event_type, payload):
-        return "event: %s\ndata: %s\n\n" % (
-            event_type, json.dumps(payload, ensure_ascii=False))
+        """One SSE event. ensure_ascii=False keeps Czech text as UTF-8.
+
+        Except a lone surrogate, which json.dumps() then writes out raw and
+        which cannot be encoded as UTF-8: measured 2026-10-29, a reply that
+        restored a value containing one raised UnicodeEncodeError in the
+        server's chunk writer and cut the stream. Inside a JSON string --
+        the only place a surrogate can be -- its \\uXXXX escape is valid, and
+        is exactly what the client sent us.
+        """
+        data = json.dumps(payload, ensure_ascii=False)
+        if _SURROGATE_RE.search(data):
+            data = _SURROGATE_RE.sub(lambda m: "\\u%04x" % ord(m.group()),
+                                     data)
+        return "event: %s\ndata: %s\n\n" % (event_type, data)
 
 
 # ─────────────────────────────────────────────────────────── self-test ──
@@ -387,6 +404,25 @@ def _self_test():
     out = u.feed(whole[:half]) + u.feed(whole[half:]) + u.finish()
     check("portal.acmebank.cz" in out,
           "an event split across network chunks is reassembled")
+
+    # A restored value holding a lone surrogate: the event must still be
+    # encodable, and must still carry the value the client sent.
+    lone = json.loads('"Ab\\ud83dcd"')
+    u = SSEUnmasker({"[CREDENTIAL_1]": lone})
+    out = u.feed(sse(0, "text_delta", "text", "pw [CREDENTIAL_1] ok")) \
+        + u.finish()
+    enc = None
+    try:
+        enc = out.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    got = "".join(json.loads(ev.split("data: ", 1)[1])["delta"]["text"]
+                  for ev in out.split("\n\n") if "data: " in ev)
+    check(enc is not None and got == "pw %s ok" % lone,
+          "a lone surrogate in a restored value is escaped, not fatal")
+    u = SSEUnmasker({})
+    cz = u.feed(sse(0, "text_delta", "text", "\u0159\u00e1dek")) + u.finish()
+    check("\u0159\u00e1dek" in cz, "other non-ASCII text stays as UTF-8")
 
     print("\n%s" % ("PASSED" if not failures
                     else "%d FAILED: %s" % (len(failures), failures)))

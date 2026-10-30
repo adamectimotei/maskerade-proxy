@@ -198,9 +198,104 @@ def canonical(obj):
 
     split one conversation into two sessions just because a client
     serialised a dict differently between turns.
+
+    ensure_ascii=True since 2026-10-29. With ensure_ascii=False the result
+    was encoded to UTF-8, and a LONE SURROGATE -- which json.loads accepts
+    from a "\\ud83d" escape, and which a client produces when it truncates a
+    tool output in the middle of an emoji -- raised UnicodeEncodeError.
+    Measured on 0.1.4: the request was masked and answered, then persist()
+    raised, the turn was never remembered, and every later turn of that
+    conversation died in resolve_prefix() with a traceback and a dropped
+    connection. Escaping makes every string encodable, and the session
+    document stays plain JSON that any version reads back.
     """
-    return json.dumps(obj, sort_keys=True, ensure_ascii=False,
-                      separators=(",", ":")).encode("utf-8")
+    return json.dumps(obj, sort_keys=True, ensure_ascii=True,
+                      separators=(",", ":")).encode("ascii")
+
+
+# What the prefix hash ignores. Changed 2026-10-29, measured on a real
+# Claude Code session of 114 messages: no turn ever matched the previous one.
+#
+# The cause is two things a client legitimately changes in messages it has
+# already sent:
+#
+#   cache_control  Claude Code puts its prompt-cache breakpoint on the
+#                  newest message and removes it from the previous one. The
+#                  previous request's last message is therefore never
+#                  byte-identical to the same message one turn later.
+#   one text block it then re-sends that message's content
+#                  [{"type": "text", "text": X}] as the plain string X.
+#
+# Both are invisible to masking: `cache_control` is BLOCK_STRUCTURAL in
+# fields.py and never read as text, and extract() sends a bare string and a
+# lone text block through the same _leaf() -- same text, same
+# system-reminder rule. So the normalised form is equal exactly when the
+# TEXT extract() would scan is equal.
+#
+# What the match is used for changed on 2026-10-30. It was used to mask the
+# matched messages from the stored map without detection, and that turned
+# out not to reproduce what detection had produced (proxy/maskcache.py has
+# the measurements). It now only decides which SESSION a request belongs
+# to -- for an unlabelled conversation, the only thing that does.
+#
+# Deliberately NOT normalised: anything extract() reads. In particular the
+# walk does not descend into tool_use `input`, which is arbitrary JSON and
+# may legitimately contain a key named "cache_control".
+
+def _norm_content(val):
+    """Message content, tool_result content or `system`: a string or blocks."""
+    if not isinstance(val, list):
+        return val
+    out = [_norm_block(b) for b in val]
+    if len(out) == 1:
+        only = out[0]
+        if (isinstance(only, dict) and set(only) == {"type", "text"}
+                and only["type"] == "text" and isinstance(only["text"], str)):
+            return only["text"]
+    return out
+
+
+def _norm_block(blk):
+    if not isinstance(blk, dict):
+        return blk
+    out = {k: v for k, v in blk.items() if k != "cache_control"}
+    if out.get("type") == "tool_result" and "content" in out:
+        out["content"] = _norm_content(out["content"])
+    return out
+
+
+def _norm_message(msg):
+    if not isinstance(msg, dict) or "content" not in msg:
+        return msg
+    out = dict(msg)
+    out["content"] = _norm_content(msg["content"])
+    return out
+
+
+def _all_prefix_hashes(system, messages):
+    """[h0, h1, ..., hn] where hk = prefix_hash(system, messages[:k]).
+
+    One serialisation of the conversation instead of one per prefix. The
+    bytes hashed are exactly canonical({"messages": [...], "system": ...}):
+    sort_keys puts "messages" first, so every prefix shares the leading
+    bytes and differs only in where the array closes. sha256 objects are
+    copied at each message boundary. The scan that used this per prefix
+    re-serialised messages[:k] for every k -- quadratic in the conversation,
+    and it runs twice per request.
+    """
+    msgs = list(messages or [])
+    tail = b'],"system":' + canonical(_norm_content(system)) + b"}"
+    h = hashlib.sha256(b'{"messages":[')
+    out = []
+    for i in range(len(msgs) + 1):
+        if i:
+            if i > 1:
+                h.update(b",")
+            h.update(canonical(_norm_message(msgs[i - 1])))
+        c = h.copy()
+        c.update(tail)
+        out.append(c.hexdigest())
+    return out
 
 
 def prefix_hash(system, messages):
@@ -208,22 +303,17 @@ def prefix_hash(system, messages):
 
     Raw, not masked: the client stores and resends real values, so the raw
     prefix is the stable thing. A masked prefix would depend on the map we
-    are trying to look up, which is circular.
+    are trying to look up, which is circular. Normalised as described
+    above, which changes nothing extract() reads.
     """
-    return hashlib.sha256(
-        canonical({"system": system, "messages": list(messages)})
-    ).hexdigest()
+    return _all_prefix_hashes(system, messages)[-1]
 
 
 def prefix_hashes(system, messages, lookback=MAX_PREFIX_LOOKBACK):
     """Candidate parent hashes, longest prefix first."""
-    n = len(messages or [])
-    out = []
-    for k in range(n - 1, 0, -1):
-        out.append(prefix_hash(system, messages[:k]))
-        if len(out) >= lookback:
-            break
-    return out
+    hs = _all_prefix_hashes(system, messages)
+    n = len(hs) - 1
+    return [hs[k] for k in range(n - 1, 0, -1)][:lookback]
 
 
 # ───────────────────────────────────────────────────────────── the store ──
@@ -307,10 +397,12 @@ class SessionStore:
     def resolve_prefix(self, system, messages, label=None):
         """resolve(), plus HOW MANY messages the matched prefix covers.
 
-        The caller uses the count to decide what still needs detecting. A
-        message inside the matched prefix is provably byte-identical to one
-        already masked -- if it were not, its hash would not have matched --
-        so the stored map alone is enough for it.
+        Since 2026-10-30 the count is informational: the server no longer
+        masks a matched prefix from the stored map, because replaying the
+        map is not replaying detection (see proxy/maskcache.py). What the
+        prefix still decides is WHICH session a request belongs to, which
+        is why the normalisation above matters: a moved cache marker must
+        not split one conversation into two.
 
         A LABEL IS A NAMESPACE, NOT A BYPASS. Changed 2026-10-18.
 
@@ -349,12 +441,14 @@ class SessionStore:
                 # Nothing stored under this label yet, so there is no map
                 # for a prefix to be covered BY.
                 return sid, continued, 0
-            for k in range(len(messages or []) - 1, 0, -1):
-                if self._read_index(prefix_hash(system, messages[:k])) == sid:
+            hs = _all_prefix_hashes(system, messages)
+            for k in range(len(hs) - 2, 0, -1):
+                if self._read_index(hs[k]) == sid:
                     return sid, True, k
             return sid, continued, 0
-        for k in range(len(messages or []) - 1, 0, -1):
-            sid = self._read_index(prefix_hash(system, messages[:k]))
+        hs = _all_prefix_hashes(system, messages)
+        for k in range(len(hs) - 2, 0, -1):
+            sid = self._read_index(hs[k])
             if sid and os.path.exists(self._session_path(sid)):
                 return sid, True, k
         return self.new_id(), False, 0
@@ -623,6 +717,103 @@ def _self_test():
         sid5, cont5 = st.resolve(sysp, branch)
         check(cont5 and sid5 == sid1,
               "a branched conversation keeps the parent's numbering")
+
+        # ── Normalisation, 2026-10-29: what a client changes in history ──
+        # Claude Code's pattern, measured: the cache breakpoint moves to the
+        # newest message, and the previous one comes back as a plain string.
+        cc = {"type": "ephemeral", "ttl": "1h"}
+        sys_b = [{"type": "text", "text": "agent prompt", "cache_control": cc}]
+        r1 = [{"role": "user", "content": [
+            {"type": "text", "text": "scan crm.acme.cz", "cache_control": cc}]}]
+        cid = st.new_id()
+        st.save(cid, {"[INTERNAL_HOSTNAME_1]": "crm.acme.cz"})
+        st.remember(cid, sys_b, r1)
+        r2 = [{"role": "user", "content": "scan crm.acme.cz"},
+              {"role": "assistant", "content": [
+                  {"type": "tool_use", "id": "t1", "name": "Bash",
+                   "input": {"command": "nmap crm.acme.cz"}}]},
+              {"role": "user", "content": [
+                  {"type": "tool_result", "tool_use_id": "t1",
+                   "content": [{"type": "text", "text": "80/tcp open",
+                                "cache_control": cc}]}]}]
+        sys_b2 = [{"type": "text", "text": "agent prompt"}]
+        got = st.resolve_prefix(sys_b2, r2)
+        check(got == (cid, True, 1),
+              "a moved cache_control and a collapsed text block still "
+              "match the parent (got %r)" % (got,))
+        r3 = r2 + [{"role": "assistant", "content": "done"},
+                   {"role": "user", "content": "next"}]
+        st.remember(cid, sys_b2, r2)
+        check(st.resolve_prefix(sys_b, r3)[2] == 3,
+              "the next turn matches the longest prefix again")
+
+        # NOT normalised: anything extract() reads. A key named
+        # cache_control inside tool input is data, and must split.
+        a = [{"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t", "name": "x",
+             "input": {"cache_control": "secret-1"}}]}]
+        b = [{"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t", "name": "x",
+             "input": {"cache_control": "secret-2"}}]}]
+        check(prefix_hash("s", a) != prefix_hash("s", b),
+              "cache_control inside tool input is hashed as data")
+        cit = [{"role": "user", "content": [
+            {"type": "text", "text": "x", "citations": []}]}]
+        check(prefix_hash("s", cit) != prefix_hash(
+            "s", [{"role": "user", "content": "x"}]),
+            "a text block with another key is not collapsed")
+        two = [{"role": "user", "content": [{"type": "text", "text": "x"},
+                                            {"type": "text", "text": "y"}]}]
+        check(prefix_hash("s", two) != prefix_hash(
+            "s", [{"role": "user", "content": "xy"}]),
+            "two text blocks are not merged into one string")
+        check(prefix_hash("s", [{"role": "user", "content": "x"}])
+              != prefix_hash("s", [{"role": "assistant", "content": "x"}]),
+              "the role is part of the identity")
+
+        # The incremental hash is byte-for-byte the documented one.
+        msgs = r2 + [{"role": "user", "content": "\u0159\u00e1dek \U0001f600"}]
+        hs = _all_prefix_hashes(sys_b, msgs)
+        ok = len(hs) == len(msgs) + 1
+        for k in range(len(msgs) + 1):
+            ref = hashlib.sha256(canonical({
+                "system": _norm_content(sys_b),
+                "messages": [_norm_message(m) for m in msgs[:k]]})).hexdigest()
+            ok = ok and hs[k] == ref
+        check(ok, "incremental prefix hashes equal canonical() of each prefix")
+        check(prefix_hashes(sys_b, msgs, lookback=2) == [hs[3], hs[2]],
+              "prefix_hashes is longest-first and bounded")
+
+        # The invariant the cache rests on: normalising changes nothing
+        # extract() reads, in content or in order.
+        from . import fields as _F
+        for body in ({"messages": r2}, {"messages": r3}, {"messages": cit},
+                     {"messages": two}, {"messages": msgs}):
+            raw_t = [t for _, t in _F.extract(body)]
+            norm_t = [t for _, t in _F.extract(
+                {"messages": [_norm_message(m) for m in body["messages"]]})]
+            check(raw_t == norm_t, "normalising preserves the scanned text "
+                                   "(%d strings)" % len(raw_t))
+
+        # A lone surrogate: json.loads accepts "\\ud83d", a client that cuts
+        # a tool output inside an emoji sends one, and it used to kill the
+        # conversation in persist() and every turn after.
+        lone = json.loads('[{"role":"user","content":"cut \\ud83d here"}]')
+        raised = None
+        try:
+            sid_l = st.new_id()
+            st.save(sid_l, {"[X_1]": "cut \ud83d"})
+            st.remember(sid_l, "s", lone)
+            nxt = lone + [{"role": "assistant", "content": "ok"},
+                          {"role": "user", "content": "more"}]
+            back = st.resolve_prefix("s", nxt)
+            mm_l = st.load(sid_l)
+        except Exception as e:
+            raised = e
+        check(raised is None and back == (sid_l, True, 1)
+              and mm_l == {"[X_1]": "cut \ud83d"},
+              "a lone surrogate is stored, remembered and matched (%r)"
+              % (raised,))
 
         # Corruption refuses rather than silently renumbering.
         with open(st._session_path(sid1), "w", encoding="utf-8") as f:

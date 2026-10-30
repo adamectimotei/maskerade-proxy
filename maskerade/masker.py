@@ -400,6 +400,12 @@ def apply_masks(text, entities, config, existing_mask_map=None, report=None):
     type_counters = {}
     text_to_placeholder = {}
     mask_map = {}
+    # (original, type) -> (type, index) for entries that came from
+    # existing_mask_map. Used to make two decisions independent of the
+    # ORDER the map is iterated in, which is not stable: a map loaded from
+    # disk is sorted by placeholder, the same map in memory is in insertion
+    # order. See the substitution loop below.
+    existing_rank = {}
 
     if existing_mask_map:
         # Copy existing mappings — preserve continuity even if some values
@@ -417,8 +423,13 @@ def apply_masks(text, entities, config, existing_mask_map=None, report=None):
                 idx = int(match.group(2))
                 # Track highest index per type
                 type_counters[etype] = max(type_counters.get(etype, 0), idx)
-                # Build text→placeholder for consistent mapping
-                text_to_placeholder[(original, etype)] = placeholder
+                # Build text→placeholder for consistent mapping. One value
+                # recorded twice under the same type resolves to the LOWEST
+                # index, not to whichever entry was iterated last.
+                key = (original, etype)
+                if key not in existing_rank or (etype, idx) < existing_rank[key]:
+                    existing_rank[key] = (etype, idx)
+                    text_to_placeholder[key] = placeholder
 
     # ─── Split "identifier:secret" pairs and full-path spans before ───
     # anything else. Must run before Layer 1 so each fragment is
@@ -529,12 +540,30 @@ def apply_masks(text, entities, config, existing_mask_map=None, report=None):
     # ─── Layer 4: sort by text length DESC (longest first) ───
     sorted_entities = sorted(aligned_entities, key=lambda e: -len(e["text"]))
 
+    # ONE placeholder per value, whatever type a later detector calls it.
+    # Added 2026-10-30. Keyed on (text, type) alone, a value that one
+    # detector called AUTH_COOKIE and another HIGH_ENTROPY_SECRET got two
+    # placeholders, and only one could ever be used: which one depended on
+    # dict order, and a map read back from disk is in a different order
+    # from the same map in memory. A dogfood session measured the same
+    # token as [CREDENTIAL_12] on one turn and [HIGH_ENTROPY_SECRET_201] on
+    # the next. The masked TEXT of a single call is unchanged by this: the
+    # placeholder that is reused is the one that already won the tie.
+    value_to_placeholder = {}
+    for key, ph in text_to_placeholder.items():
+        rank = existing_rank.get(key)
+        cur = value_to_placeholder.get(key[0])
+        if cur is None or rank < cur[0]:
+            value_to_placeholder[key[0]] = (rank, ph)
+
     for entity in sorted_entities:
         e_text = entity["text"]
         e_type = entity["entity_type"]
 
         key = (e_text, e_type)
         if consistent and key in text_to_placeholder:
+            continue
+        if consistent and e_text in value_to_placeholder:
             continue
 
         if e_type not in type_counters:
@@ -544,16 +573,31 @@ def apply_masks(text, entities, config, existing_mask_map=None, report=None):
         placeholder = fmt.format(type=e_type, index=type_counters[e_type])
         text_to_placeholder[key] = placeholder
         mask_map[placeholder] = e_text
+        value_to_placeholder[e_text] = ((), placeholder)
 
     # ─── Layers 2 + 4: word-boundary regex, longest-first ───
     # Critical: longest first prevents short values from masking
     # before longer values that contain them. Word-boundary regex
     # prevents matched values from substring-corrupting unrelated tokens.
+    #
+    # Ties -- equal length, which in practice means ONE value recorded under
+    # two types, [CREDENTIAL_12] and [HIGH_ENTROPY_SECRET_201] -- go to the
+    # entry the conversation already had, lowest (type, index) first, and
+    # only then to new entries in the order they were created. Before
+    # 2026-10-30 the tie went to dict order, so the same text masked with
+    # the same map came out [CREDENTIAL_12] in one request and
+    # [HIGH_ENTROPY_SECRET_201] in the next. With no existing map (the
+    # library's one-shot use, and every benchmark) the order is unchanged.
+    seq = {k: i for i, k in enumerate(text_to_placeholder)}
+
+    def _order(item):
+        key = item[0]
+        rank = existing_rank.get(key)
+        tie = (0, rank[0], rank[1]) if rank else (1, "", seq[key])
+        return (-len(key[0]), tie)
+
     masked_text = text
-    for key, placeholder in sorted(
-        text_to_placeholder.items(),
-        key=lambda x: -len(x[0][0])
-    ):
+    for key, placeholder in sorted(text_to_placeholder.items(), key=_order):
         original_text = key[0]
         if not original_text:
             continue

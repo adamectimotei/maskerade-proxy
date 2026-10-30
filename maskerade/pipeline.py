@@ -472,7 +472,8 @@ class Pipeline:
             t0 = time.time()
             try:
                 text_for_detection, custom_entities, custom_mask_entries = \
-                    apply_custom_masks(raw_text, custom_masks)
+                    apply_custom_masks(raw_text, custom_masks,
+                                       existing_mask_map)
                 all_entities.extend(custom_entities)
                 timing["custom"] = round(time.time() - t0, 3)
                 if verbose:
@@ -666,7 +667,9 @@ class Pipeline:
         if custom_mask_entries:
             # Re-apply custom rules to raw_text so the final masked_text has
             # them substituted with their flag-aware semantics.
-            base_text, _, _ = apply_custom_masks(raw_text, custom_masks or [])
+            # The same map as the call above, so the same placeholders.
+            base_text, _, _ = apply_custom_masks(raw_text, custom_masks or [],
+                                                 existing_mask_map)
             merged_existing = dict(existing_mask_map or {})
             merged_existing.update(custom_mask_entries)
         else:

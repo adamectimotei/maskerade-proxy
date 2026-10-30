@@ -155,13 +155,50 @@ def _dedupe_placeholders(sorted_rules):
     return out, collisions
 
 
-def apply_custom_masks(text, custom_masks):
+_PLACEHOLDER_PARTS_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)_(\d+)\]")
+
+
+def _seed_from_map(existing_mask_map):
+    """Numbering state from the conversation's map, for placeholder_type.
+
+    Returns (type_counters, issued, by_value): the highest index already
+    issued per type; the placeholder already issued for each (type, matched
+    spelling); and, for a spelling the map holds only under ANOTHER type --
+    a detector found "Leo Express" before the rule was added -- that
+    placeholder, so one value keeps one placeholder (masker.apply_masks
+    keeps the same rule). Duplicates, which the bug described in
+    apply_custom_masks left behind, resolve to the lowest (type, index), so
+    the choice never depends on the order the map is iterated in.
+    """
+    counters, issued, best, by_value, vbest = {}, {}, {}, {}, {}
+    for ph, value in (existing_mask_map or {}).items():
+        m = _PLACEHOLDER_PARTS_RE.fullmatch(ph)
+        if not m or not isinstance(value, str):
+            continue
+        etype, idx = m.group(1), int(m.group(2))
+        counters[etype] = max(counters.get(etype, 0), idx)
+        key = (etype, value)
+        if key not in best or idx < best[key]:
+            best[key] = idx
+            issued[key] = ph
+        if value not in vbest or (etype, idx) < vbest[value]:
+            vbest[value] = (etype, idx)
+            by_value[value] = ph
+    return counters, issued, by_value
+
+
+def apply_custom_masks(text, custom_masks, existing_mask_map=None):
 
     """Apply user-defined custom masks to text BEFORE other detection stages.
 
     Args:
         text:          raw input text
         custom_masks:  list of rule dicts (see module docstring)
+        existing_mask_map: the conversation's map so far. placeholder_type
+                       rules continue ITS numbering and reuse ITS
+                       placeholders. Without it (the library's one-off
+                       callers: `rules test`, the wizard's self-check) the
+                       numbering starts at 1, as before.
 
     Returns:
         (masked_text, entities, partial_mask_map)
@@ -211,8 +248,18 @@ def apply_custom_masks(text, custom_masks):
     # placeholder_type bookkeeping: TYPE -> highest index issued, and
     # (TYPE, matched_text) -> the placeholder already issued for it, so the
     # same spelling in twenty places still gets one placeholder.
-    type_counters = {}
-    matched_placeholder = {}
+    #
+    # SEEDED FROM THE CONVERSATION'S MAP since 2026-10-30. Before, both
+    # started empty on every call, and the pipeline calls this once per
+    # TEXT. So the first spelling in each message became [CLIENT_NAME_1]
+    # whatever [CLIENT_NAME_1] already meant, and the pipeline's
+    # merged_existing.update() then OVERWROTE the earlier value. Measured on
+    # a dogfood session: "Leo Express" was [CLIENT_NAME_1] in one message
+    # and "leo" in the next, the map ended holding "leo" twice, replies
+    # were unmasked to the wrong spelling, and once history was re-masked
+    # from the map, "Leo Express" went out in clear.
+    type_counters, matched_placeholder, by_value = _seed_from_map(
+        existing_mask_map)
 
     def overlaps(a, b):
         return any(a < e and b > s for s, e in claimed)
@@ -238,12 +285,18 @@ def apply_custom_masks(text, custom_masks):
                 # actually in the text, so unmasking restores those bytes.
                 matched = text[start:end]
                 key = (etype, matched)
-                ph = matched_placeholder.get(key)
+                ph = matched_placeholder.get(key) or by_value.get(matched)
                 if ph is None:
                     type_counters[etype] = type_counters.get(etype, 0) + 1
                     ph = "[%s_%d]" % (etype, type_counters[etype])
                     matched_placeholder[key] = ph
-                    mask_map[ph] = matched
+                    by_value[matched] = ph
+                # Returned whether new or reused: the pipeline re-applies
+                # the rules only when this map is non-empty, and a rule's
+                # case-insensitive, substring-capable match must not be
+                # replaced by the masker's exact, word-bounded one just
+                # because every spelling was already known.
+                mask_map[ph] = matched
                 entity_text = matched
             else:
                 ph = placeholder
@@ -278,3 +331,58 @@ def apply_custom_masks(text, custom_masks):
         masked_text = masked_text[:start] + placeholder + masked_text[end:]
 
     return masked_text, entities, mask_map
+
+
+# ─────────────────────────────────────────────────────────── self-test ──
+
+def _self_test():
+    failures = []
+
+    def check(cond, label):
+        print(("ok   " if cond else "FAIL ") + label)
+        if not cond:
+            failures.append(label)
+
+    rules = [{"value": "Leo Express", "placeholder_type": "CLIENT_NAME"},
+             {"value": "leo", "placeholder_type": "CLIENT_NAME"}]
+
+    # The 2026-10-30 bug: numbering restarted at 1 on every call.
+    m1 = {"[CLIENT_NAME_1]": "Leo Express", "[CLIENT_NAME_2]": "leo"}
+    out, _e, mm = apply_custom_masks("host graph.test.leo.com", rules, m1)
+    check(out == "host graph.test.[CLIENT_NAME_2].com",
+          "a known spelling reuses its placeholder (got %r)" % out)
+    check(mm == {"[CLIENT_NAME_2]": "leo"},
+          "and returns it, so the pipeline re-applies the rule")
+    out, _e, mm = apply_custom_masks("LEO and leo", rules, m1)
+    check(mm.get("[CLIENT_NAME_3]") == "LEO"
+          and mm.get("[CLIENT_NAME_2]") == "leo",
+          "a new spelling continues the numbering (got %r)" % mm)
+    check(all(m1.get(k, v) == v for k, v in mm.items()),
+          "no existing placeholder is given a new value")
+
+    # Without a map the numbering starts at 1, as for the one-off callers.
+    out, _e, mm = apply_custom_masks("leo", rules)
+    check(mm == {"[CLIENT_NAME_1]": "leo"}, "no map: numbering starts at 1")
+
+    # A spelling the map holds under another type keeps that placeholder.
+    out, _e, mm = apply_custom_masks(
+        "Leo Express", rules, {"[ORGANIZATION_4]": "Leo Express"})
+    check(out == "[ORGANIZATION_4]",
+          "one value keeps one placeholder across types (got %r)" % out)
+
+    # A map with one spelling twice resolves to the lowest index, in any
+    # iteration order.
+    dup_a = {"[CLIENT_NAME_1]": "leo", "[CLIENT_NAME_2]": "leo"}
+    dup_b = dict(reversed(list(dup_a.items())))
+    got = {apply_custom_masks("leo", rules, d)[0] for d in (dup_a, dup_b)}
+    check(got == {"[CLIENT_NAME_1]"},
+          "duplicates resolve the same way in any map order (got %r)" % got)
+
+    print("\n%s" % ("PASSED" if not failures
+                    else "%d FAILED: %s" % (len(failures), failures)))
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(_self_test())

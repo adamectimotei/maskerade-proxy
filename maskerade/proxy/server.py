@@ -67,7 +67,10 @@ session id and counts. On a refusal the offending field's PATH is logged, its
 value is not.
 """
 import argparse
+import codecs
 import errno
+import http.client
+import itertools
 import json
 import os
 import socket
@@ -80,6 +83,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import fields as F
 from . import stream as S
+from .maskcache import MaskCache, substitute_outside_placeholders
 from .note import SystemNote
 from .rules import RulesError, RulesFile
 from .store import SessionStore, StoreError, prefix_hash
@@ -175,6 +179,25 @@ UNSCANNED_MAX_NAMES = 20
 UNSCANNED_MAX_CHARS = 200
 
 
+# The CLIENT went away: Esc in Claude Code, a client-side timeout, or an
+# idle keep-alive connection being closed. Windows reports the same event as
+# ConnectionAbortedError (WinError 10053) or ConnectionResetError (10054),
+# Linux usually as BrokenPipeError. Before 2026-10-29 only two of the three
+# were caught, and only inside the streaming loop: a dogfood session on
+# Windows logged 13 full tracebacks for this, 12 of them idle connections and
+# one a request dropped before its headers went out -- which then had no
+# access-log line at all.
+CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+# The PROVIDER's connection failing after urlopen() returned: a reset, a
+# read timeout, a truncated body. Kept apart from CLIENT_GONE on purpose --
+# ConnectionResetError is both, and reporting Anthropic dropping a stream as
+# "client-disconnected" sends the operator looking at the wrong end.
+# urllib.error.URLError is an OSError too; every site that catches this
+# catches URLError first.
+UPSTREAM_BROKEN = (OSError, http.client.HTTPException)
+
+
 class Refusal(Exception):
     """Something the masker will not forward. Always the operator's to fix."""
 
@@ -218,6 +241,14 @@ class Masker:
         # operator is told once rather than on every turn of a conversation
         # that sends the same eight fields each time.
         self._warned_unscanned = set()
+        # How each text of the history was masked. See maskcache.py.
+        self.cache = MaskCache()
+        # The texts a request would add to the cache, held per THREAD until
+        # remember() -- not in `info`, which callers log and copy: it holds
+        # raw text. ThreadingHTTPServer runs a request's masking, upstream
+        # call and persist on one thread.
+        self._pending = threading.local()
+        self._ticket = itertools.count(1)
 
     def lock_for(self, session_id):
         with self._guard:
@@ -257,24 +288,27 @@ class Masker:
     def mask_request(self, body):
         """Return (masked_body, mask_map, info). Raises Refusal.
 
-        Fields in the matched conversation prefix are masked with the stored
-        map ALONE -- no detection. Re-detecting the whole history every turn
-        costs the measured p50 of 314 ms per message, climbing with
-        conversation length, to recompute an answer already on disk.
+        Every scanned text is either DETECTED, the first time this process
+        sees it, or taken from the mask cache: what it was masked as before,
+        plus whatever the map has learned since. maskcache.py says why the
+        cached form is kept rather than rebuilt from the map.
 
-        The prefix is safe to treat this way because the prefix HASH covers
-        it: if any byte of `system` or of an earlier message had changed, the
-        hash would not have matched and there would be no prefix.
+        Until 2026-10-30 a text inside the matched conversation prefix was
+        masked from the stored map ALONE, on the reasoning that the prefix
+        hash proved it identical to text already masked. Identical text, yes;
+        identical RESULT, no -- replaying the map is not replaying detection.
+        A dogfood session measured placeholders changing between turns and
+        masked client names going out in clear. The prefix now only decides
+        which session a request belongs to.
 
-        Since 2026-10-17 the only thing extracted is message content, and the
-        prefix hash covers `(system, messages)` in full -- so there is no
-        longer any extracted field OUTSIDE the hash's coverage. The sentence
-        that used to stand here, "anything the hash does not cover -- tools,
-        metadata, stop_sequences -- is detected on every turn", described a
-        set that is now empty: those fields are not detected on any turn.
+        The map only ever GROWS by appending: no placeholder may change its
+        value and none may disappear. That is checked after every text and
+        the request is refused if it fails, because a placeholder that
+        changes meaning un-masks the history that used it, and unmasks the
+        model's reply to the wrong value. It is how the custom-stage
+        renumbering bug of 2026-10-30 would have been caught on its first
+        request.
         """
-        from maskerade.masker import apply_masks
-
         # Pick up an edited rules file without a restart. A reload that
         # FAILS keeps the previous rules and reports the reason: running
         # on the last known-good list is safer than dropping to none,
@@ -283,6 +317,9 @@ class Masker:
         if changed:
             sys.stderr.write("  [RULES] reloaded %s\n"
                              % self.rules.summary())
+            # The rules decided what the first detection of every cached
+            # text found. Under new rules that answer is stale.
+            self.cache.clear()
         if rules_error:
             sys.stderr.write("  [RULES] reload FAILED, keeping %d rule(s): "
                              "%s\n" % (len(self.rules), rules_error))
@@ -290,30 +327,38 @@ class Masker:
         # ONE walk. `unscanned` is an out-parameter rather than a second
         # return value so that inject()'s re-walk, which compares the
         # returned paths for count and order, is untouched.
+        # A request that is refused leaves nothing for remember() to find.
+        self._pending.data = None
+        ticket = next(self._ticket)
+
         unscanned = []
         extracted = F.extract(body, unscanned)   # raises on a POLICY refusal
         self.warn_unscanned(unscanned)
         system = body.get("system")
         messages = body.get("messages") or []
 
-        sid, continued, matched = self.store.resolve_prefix(
+        sid, continued, _matched = self.store.resolve_prefix(
             system, messages, label=self.engagement)
         mask_map = self.store.load(sid) if continued else {}
+        token = self.cache.sync(sid, mask_map)
 
-        cached = _cached_paths(matched)
-        out = []
-        notes, widened, unmasked = [], 0, []
+        # [path, raw text, masked text, k, remember]: the masked text
+        # accounts for the first k entries of the map, in order.
+        items = []
+        notes, widened = [], 0
+        hits = detected = 0
 
         for path, text in extracted:
             if not text:
-                out.append((path, text))
+                items.append([path, text, text, len(mask_map), False])
                 continue
-            if _is_cached(path, cached):
-                masked, mask_map = apply_masks(
-                    text, [], self.pipeline.config, mask_map)
-                out.append((path, masked))
+            masked = self.cache.lookup(token, text, mask_map)
+            if masked is not None:
+                hits += 1
+                items.append([path, text, masked, len(mask_map), True])
                 continue
 
+            detected += 1
             result = self.pipeline.run(
                 text, existing_mask_map=mask_map,
                 custom_masks=self.rules.rules)
@@ -339,10 +384,30 @@ class Masker:
                                 {l.get("entity_type")
                                  for l in validation.get("leaked", [])})})
 
-            notes.extend(result.get("stage_notes") or [])
+            _check_map_grows(mask_map, result["mask_map"], path)
+            stage_notes = result.get("stage_notes") or []
+            notes.extend(stage_notes)
             widened += len(result.get("masker_widened") or [])
             mask_map = result["mask_map"]
-            out.append((path, result["masked_text"]))
+            # A degraded detection is not remembered: next turn it is
+            # detected again, with the stage back if it has recovered.
+            items.append([path, text, result["masked_text"], len(mask_map),
+                          not stage_notes])
+
+        # Values learned from a LATER text of this request, applied to the
+        # earlier ones. Without this pass a value first detected in message
+        # 30 went out in clear in message 27 of the same request -- measured
+        # on the dogfood replay, where a token pair read from a file was
+        # only recognised in a later message. Same substitution as the
+        # cache uses: outside existing placeholders, so it only ever adds.
+        keys = list(mask_map)
+        for it in items:
+            if it[3] < len(keys) and it[2]:
+                it[2] = substitute_outside_placeholders(
+                    it[2], [(ph, mask_map[ph]) for ph in keys[it[3]:]])
+                it[3] = len(keys)
+        out = [(it[0], it[2]) for it in items]
+        pending = [(it[1], it[2], it[3]) for it in items if it[4]]
 
         masked_body = F.inject(body, out)
         # AFTER masking, deliberately. The note is our own text and must not
@@ -363,8 +428,29 @@ class Masker:
             # to the session document, and `sessions list` must keep its
             # promise that it never prints anything from a request.
             "unscanned": F.short_names(unscanned),
+            "texts_cached": hits,
+            "texts_detected": detected,
+            # A number, so remember() can tell this request's pending texts
+            # from a previous request's on the same thread.
+            "cache_ticket": ticket,
         }
+        self._pending.data = (ticket, token, pending)
         return masked_body, mask_map, info
+
+    def remember(self, info, mask_map):
+        """Commit this request's texts to the mask cache.
+
+        Only after persist() has saved the map that numbers them: a request
+        that failed must not leave cached text holding placeholders the
+        stored map does not have.
+        """
+        data = getattr(self._pending, "data", None)
+        self._pending.data = None
+        if not data or data[0] != info.get("cache_ticket"):
+            return
+        _ticket, token, pending = data
+        if pending:
+            self.cache.commit(token, mask_map, pending)
 
     def persist(self, session_id, mask_map, system, messages, unscanned=None):
         # label= was never passed, so doc["label"] was always None and the
@@ -376,28 +462,25 @@ class Masker:
         self.store.remember(session_id, system, messages)
 
 
-def _cached_paths(matched):
-    """Message indices whose content the prefix hash already covers."""
-    return set(range(matched))
+def _check_map_grows(before, after, path):
+    """Refuse unless `after` is `before` with entries appended.
 
-
-def _is_cached(path, cached):
-    if not cached:
-        return False
-    # DORMANT since 2026-10-17: extract() emits no `system` path at all, so
-    # this branch is unreachable. Kept, like fields.py's schema walk, for
-    # the day `--scan system` turns it back on -- deleting it would mean
-    # re-deriving the rule that the prefix hash covers the system prompt.
-    if path == "system" or path.startswith("system["):
-        return True              # covered by the hash whenever matched > 0
-    # DORMANT for the same reason: nothing outside `messages[` is extracted.
-    if not path.startswith("messages["):
-        return False
-    try:
-        idx = int(path[len("messages["):path.index("]")])
-    except (ValueError, IndexError):
-        return False
-    return idx in cached
+    Same keys, same values, same order, then new keys. The mask cache and
+    the replies' unmasking both rely on it, and the check costs one pass
+    over the map.
+    """
+    if len(after) < len(before):
+        raise Refusal("internal: the mask map lost entries while masking %s, "
+                      "so the request was not sent." % path,
+                      kind="maskerade_pipeline_error")
+    for (k0, v0), k1 in zip(before.items(), after):
+        if k0 != k1 or after[k1] != v0:
+            raise Refusal(
+                "internal: placeholder %s was re-assigned while masking %s, "
+                "so the request was not sent. Purge this session (maskerade "
+                "sessions purge --session <id>) and report it."
+                % (k0 if k0 != k1 else k1, path),
+                kind="maskerade_pipeline_error")
 
 
 # ───────────────────────────────────────────────────────────── handler ──
@@ -414,6 +497,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         """Silenced. _access() is the log, and it never sees a body."""
+
+    def handle(self):
+        """The client closing its socket is not an error.
+
+        Between requests on a keep-alive connection it is not even an event,
+        and http.server would otherwise print a traceback through
+        socketserver's handle_error() for every one. Mid-request it is
+        caught where it happens, which writes the 499 access line; anything
+        that still reaches here is a reply that could not be delivered.
+        Every other exception is left to propagate exactly as before.
+        """
+        try:
+            super().handle()
+        except CLIENT_GONE:
+            self.close_connection = True
 
     def _access(self, status, started, extra=""):
         sys.stderr.write("  %s %s -> %s  %.0fms%s\n" % (
@@ -549,12 +647,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._refuse(502, "maskerade_upstream_unreachable",
                                     "could not reach the provider: %s" % e,
                                     started=started)
+            except CLIENT_GONE:
+                # Every upstream read in the two methods above converts its
+                # own failures, so what arrives here is a write to the
+                # client. Not persisted: the client never received a reply
+                # to continue from.
+                self.close_connection = True
+                self._access(499, started, "client-disconnected")
+                return
             if ok:
                 try:
                     m.persist(info["session"], mask_map, system, messages,
                               unscanned=info.get("unscanned"))
                 except StoreError as e:
                     sys.stderr.write("  [STORE] %s\n" % e)
+                else:
+                    m.remember(info, mask_map)
 
     def _count_tokens(self, started):
         """Counts the MASKED text.
@@ -578,13 +686,24 @@ class Handler(BaseHTTPRequestHandler):
     def _proxy_once(self, masked_body, mask_map, headers, started, info):
         try:
             resp = self._upstream_request(masked_body)
-            status, raw = resp.status, resp.read()
+            try:
+                status, raw = resp.status, resp.read()
+            finally:
+                resp.close()
         except urllib.error.HTTPError as e:
             # The provider's own error. Forwarded as-is: it is theirs to
             # explain, and it carries only masked text.
-            raw, status = e.read(), e.code
+            raw, status = _error_body(e), e.code
             self._send_json(status, _safe_json(raw), headers)
             self._access(status, started, "upstream-error")
+            return False
+        except urllib.error.URLError:
+            raise
+        except UPSTREAM_BROKEN as e:
+            self._refuse(502, "maskerade_upstream_broken",
+                         "the connection to the provider failed while "
+                         "reading its reply (%s), so nothing was forwarded."
+                         % type(e).__name__, started=started)
             return False
 
         try:
@@ -609,33 +728,82 @@ class Handler(BaseHTTPRequestHandler):
         try:
             resp = self._upstream_request(masked_body)
         except urllib.error.HTTPError as e:
-            raw, status = e.read(), e.code
+            raw, status = _error_body(e), e.code
             self._send_json(status, _safe_json(raw), headers)
             self._access(status, started, "upstream-error")
             return False
+        except urllib.error.URLError:
+            raise
+        except UPSTREAM_BROKEN as e:
+            # urlopen() wraps a failure to SEND in URLError, but not a
+            # failure while waiting for the status line: a provider that
+            # drops the connection arrives as RemoteDisconnected, which is a
+            # ConnectionResetError, and a read timeout as TimeoutError.
+            self._refuse(502, "maskerade_upstream_broken",
+                         "the connection to the provider failed before its "
+                         "reply started (%s), so nothing was forwarded."
+                         % type(e).__name__, started=started)
+            return False
 
-        self.send_response(resp.status)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Transfer-Encoding", "chunked")
-        for k, v in headers.items():
-            self.send_header(k, v)
-        self.end_headers()
-
-        un = S.SSEUnmasker(mask_map)
+        # Closed on every exit. When the client has gone this is what stops
+        # the provider generating -- and billing -- the rest of a reply
+        # nobody will read.
         try:
+            return self._relay_stream(resp, mask_map, headers, started, info)
+        finally:
+            resp.close()
+
+    def _relay_stream(self, resp, mask_map, headers, started, info):
+        un = S.SSEUnmasker(mask_map)
+        # INCREMENTAL, not chunk.decode(). The body is read 4096 bytes at a
+        # time, and a multi-byte UTF-8 character (Czech ř, ž, ů ...) that
+        # straddles a read boundary used to be decoded as two halves and
+        # reach the client as U+FFFD -- in reply text, and in a tool call's
+        # arguments, where a corrupted file name breaks the call. Measured
+        # 2026-10-27 with a stream whose byte 4096 fell inside "ř". The
+        # decoder holds an incomplete sequence back until its next byte.
+        dec = codecs.getincrementaldecoder("utf-8")("replace")
+        try:
+            # Inside the try: the client can be gone before the headers
+            # are out. Measured: Claude Code abandoned a request during a
+            # 30-second masking wait, end_headers() raised, and the request
+            # left no access-log line.
+            self.send_response(resp.status)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Transfer-Encoding", "chunked")
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+
             while True:
-                chunk = resp.read(4096)
+                try:
+                    chunk = resp.read(4096)
+                except UPSTREAM_BROKEN as e:
+                    # The status line is already out, so there is no status
+                    # to send. End WITHOUT the terminating chunk: the client
+                    # sees a truncated response and treats it as a failure,
+                    # rather than a clean end to a reply that is cut short.
+                    self.close_connection = True
+                    self._access(502, started, "upstream-broken (%s)"
+                                 % type(e).__name__)
+                    return False
                 if not chunk:
                     break
-                text = un.feed(chunk.decode("utf-8", "replace"))
+                text = un.feed(dec.decode(chunk))
+                if text:
+                    self._write_chunk(text)
+            rest = dec.decode(b"", final=True)
+            if rest:
+                text = un.feed(rest)
                 if text:
                     self._write_chunk(text)
             tail = un.finish()
             if tail:
                 self._write_chunk(tail)
             self._write_chunk("")        # terminating zero-length chunk
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_GONE:
+            self.close_connection = True
             self._access(499, started, "client-disconnected")
             return False
 
@@ -658,11 +826,15 @@ class Handler(BaseHTTPRequestHandler):
             resp = urllib.request.urlopen(req, timeout=60)
             raw, status = resp.read(), resp.status
         except urllib.error.HTTPError as e:
-            raw, status = e.read(), e.code
+            raw, status = _error_body(e), e.code
         except urllib.error.URLError as e:
             return self._refuse(502, "maskerade_upstream_unreachable",
                                 "could not reach the provider: %s" % e,
                                 started=started)
+        except UPSTREAM_BROKEN as e:
+            return self._refuse(502, "maskerade_upstream_broken",
+                                "the connection to the provider failed (%s)"
+                                % type(e).__name__, started=started)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
@@ -698,11 +870,16 @@ class Handler(BaseHTTPRequestHandler):
             out, status = resp.read(), resp.status
             ctype = resp.headers.get("content-type") or ctype
         except urllib.error.HTTPError as e:
-            out, status = e.read(), e.code
+            out, status = _error_body(e), e.code
             ctype = e.headers.get("content-type") or ctype
         except urllib.error.URLError as e:
             return self._refuse(502, "maskerade_upstream_unreachable",
                                 "could not reach %s: %s" % (upstream, e),
+                                started=started)
+        except UPSTREAM_BROKEN as e:
+            return self._refuse(502, "maskerade_upstream_broken",
+                                "the connection to %s failed (%s)"
+                                % (upstream, type(e).__name__),
                                 started=started)
         finally:
             del raw
@@ -716,6 +893,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(out)
         self._access(status, started, "passthrough->%s" % upstream)
+
+
+def _error_body(e):
+    """The body of the provider's HTTP error, or b"" if reading it fails.
+
+    Reading it is a network read like any other. Unguarded, a reset here
+    escaped as ConnectionResetError and was reported as the CLIENT having
+    disconnected.
+    """
+    try:
+        return e.read()
+    except UPSTREAM_BROKEN:
+        return b""
 
 
 def _safe_json(raw):
