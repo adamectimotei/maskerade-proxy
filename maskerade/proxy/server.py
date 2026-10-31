@@ -52,8 +52,9 @@ worse than an error. In this file that means:
   - a mask map that cannot be read refuses, rather than continuing with an
     empty one and returning placeholders as though they were the answer.
   - binding anything but loopback requires an explicit flag.
-  - an image or document block, whose bytes cannot be masked, is refused.
-    That is a POLICY refusal and is unaffected by the change above.
+  - an image or a PDF is NOT refused (changed 2026-10-31): it is forwarded
+    unmasked and named in X-Maskerade-Unscanned. One refused attachment in a
+    resent history refused every later turn. See fields.py, ATTACHMENTS.
 
 Refusals use 400 with a body that reads as a refusal. That is deliberate: a
 client retries 429 and 5xx, and a masker that refuses must not look like a

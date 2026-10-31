@@ -11,7 +11,7 @@ your client (Claude Code, SDK)        maskerade, on 127.0.0.1         api.anthro
 "reset it for jan.novak@acmebank.cz" ◀── restore real values    ◀──  "reset it for [EMAIL_ADDRESS_1]"
 ```
 
-> **Status: alpha (0.1.4).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
+> **Status: alpha (0.1.5).** It reduces what leaves your machine; it does not guarantee that nothing sensitive does. Read [What it does not do](#what-it-does-not-do) before relying on it, and keep reviewing what you send.
 
 ---
 
@@ -61,7 +61,7 @@ Run it with `--tier full`. Startup takes noticeably longer while the model loads
 
 ### Docker
 
-Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.4` (fast tier, ~190 MB) and `0.1.4-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
+Images are published to `ghcr.io/adamectimotei/maskerade`: `0.1.5` (fast tier, ~190 MB) and `0.1.5-ner` (full tier, model included, ~2.6 GB). See [Docker](#docker) below before running one: **how you publish the port matters.**
 
 ## Quick start with Claude Code
 
@@ -227,7 +227,7 @@ The proxy has no authentication, holds your mask maps and restores real values, 
 Read this before you depend on it.
 
 - **Only message content is inspected.** The system prompt, tool definitions and several other request fields are forwarded **as-is**, because masking them breaks the client. Every response names them in `X-Maskerade-Unscanned`. For Claude Code these fields include your **working directory, home directory, git remote and branch, and your account name**, so work from a neutrally named directory (`maskerade init` checks for this).
-- **Images and documents are refused**, not forwarded: their bytes cannot be masked.
+- **Images and PDFs are forwarded unmasked.** Their bytes cannot be masked, so a pasted screenshot, or an image file the agent reads, reaches Anthropic as it is. They are named in `X-Maskerade-Unscanned` (`image`, `document`). The text of a plain-text document, and a document's title and context, are masked.
 - **Detection is not complete.** A value no rule, pattern or model recognises goes through. The fast tier in particular misses free-text names that aren't in your rules.
 - **It only proxies the Anthropic Messages API** (`/v1/messages`, `count_tokens`, `/v1/models`, and the OAuth token refresh). Any other path is refused.
 - **It only covers traffic sent through it.** Your client's telemetry, update checks and other requests do not go through `ANTHROPIC_BASE_URL`. For Claude Code, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (which `init` sets) turns most of them off. With a non-Anthropic base URL, Claude Code also disables some features, such as MCP tool search and Remote Control.

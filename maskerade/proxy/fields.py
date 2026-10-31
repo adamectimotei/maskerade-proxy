@@ -55,9 +55,11 @@ aspirational.
     UNSCANNED   forwarded verbatim AND recorded in `unscanned_out`. A known
                 member carries a written reason; an unknown one carries its
                 path and nothing else.
-    REFUSED     raises RefusedField. Only ever a POLICY refusal: bytes this
-                tool cannot mask, or a value it could not put back. There is
-                no longer any such thing as an unknown-field refusal.
+    REFUSED     raises RefusedField. Only for a MALFORMED body -- one the
+                provider would reject too. There is no longer any such thing
+                as an unknown-field refusal, and since 2026-10-31 no content
+                refusal either: images and documents are forwarded and
+                named (see ATTACHMENTS below).
 
 WHAT IS MASKED IS DECIDED BY AUTHORSHIP, NOT BY CONTAINER
 ---------------------------------------------------------
@@ -104,6 +106,22 @@ forwards its text unscanned. `server_tool_use.input` is the concrete case.
 Masking the contents of a block this version does not understand could corrupt
 a provider-issued token, so it is reported instead.
 
+ATTACHMENTS (changed 2026-10-31)
+--------------------------------
+Images and PDF documents used to be refused, on the reasoning that their
+bytes cannot be masked. Dogfooding showed what that costs: Claude Code
+resends the whole conversation every turn, so ONE pasted screenshot, or one
+image file the agent reads, refused every later request of the
+conversation. That is the same failure the 2026-10-17 change describes --
+an operator who cannot work through the proxy works without it. So they are
+now forwarded as they are and NAMED ("image", "document"), like every other
+field this tool does not inspect. The owner's decision, with the residual
+stated: a screenshot of a client system reaches the provider unmasked.
+
+What CAN be masked in a document still is: a plain-text source (`data`
+under `"type": "text"`), a content-blocks source, and the `title` and
+`context` strings. A PDF, a URL source and a file reference are forwarded.
+
 A later version adds an opt-in `--scan tools,system` flag. The classification
 below is a data table for exactly that reason: adding it is a flag, not a
 rewrite. SCAN_FLAG_CANDIDATES names the members it would cover.
@@ -137,21 +155,21 @@ class RefusedField(Exception):
     server turns this into a 4xx that reads as "the masker refused", never
     as "the provider is flaky".
 
-    An unrecognised field is NOT one of these. Unknown fields are forwarded
-    and named on the response in X-Maskerade-Unscanned. If this exception
-    fires, something in the request carries bytes that cannot be masked
-    (an image or document block), or is malformed.
+    An unrecognised field is NOT one of these, and since 2026-10-31 neither
+    is an image or a document: both are forwarded and named on the response
+    in X-Maskerade-Unscanned. If this exception fires, the request is
+    malformed -- not a JSON object, a messages array that is not an array,
+    a block with no type -- and the provider would reject it as well.
     """
 
     def __init__(self, path, detail=""):
         self.path = path
         super().__init__(
-            "refused at %s%s. This is a policy refusal, not an unknown "
-            "field: unknown fields are forwarded and named in the "
-            "X-Maskerade-Unscanned response header. A policy refusal means "
-            "the request carries something this tool cannot mask, or is "
-            "malformed." % (path or "<root>",
-                            (": " + detail) if detail else ""))
+            "refused at %s%s. The request is malformed, so it was not "
+            "sent. Unknown fields, images and documents are forwarded and "
+            "named in the X-Maskerade-Unscanned response header; only a "
+            "body this tool cannot walk is refused."
+            % (path or "<root>", (": " + detail) if detail else ""))
 
 
 def _p(path, key):
@@ -255,6 +273,13 @@ R_BLOCKTYPE = ("a content block type this version does not recognise. Its "
                "contents may be provider-issued, so they are reported "
                "rather than masked")
 R_MESSAGE = "an unrecognised key on a message"
+R_IMAGE = ("an image. Its pixels cannot be masked, so it is forwarded as it "
+           "is: a screenshot of a client system reaches the provider "
+           "unmasked")
+R_DOCUMENT = ("a document whose bytes cannot be masked -- a PDF, a URL or a "
+              "file reference -- forwarded as it is. A plain-text document's "
+              "text IS masked")
+R_OPAQUE = "opaque `data` on a block that is not redacted_thinking"
 R_UNKNOWN = None        # a top-level field this version has never seen
 
 
@@ -269,7 +294,7 @@ BLOCK_STRUCTURAL = {
     # Provider-issued and verified on return. Masking breaks the request,
     # and neither carries operator input.
     "signature",
-    "data",             # redacted_thinking only; guarded in _block()
+    "data",             # opaque on redacted_thinking; reported elsewhere
 }
 
 # The marker that identifies harness-authored text injected into a message.
@@ -478,14 +503,11 @@ def _block(blk, path, out, un):
 
     for key, v in blk.items():
         if key in BLOCK_STRUCTURAL:
-            # POLICY REFUSAL. `data` is opaque ONLY on redacted_thinking. On
-            # an image or document block it is base64 content, which is the
-            # same family as the image/document arm below.
+            # `data` is opaque on redacted_thinking and expected there. On
+            # any other block it is not something this walk understands:
+            # forwarded and named, not refused (2026-10-31).
             if key == "data" and btype != "redacted_thinking":
-                raise RefusedField(
-                    _p(path, "data"),
-                    "opaque `data` is only forwarded on redacted_thinking. "
-                    "Elsewhere it is bytes this tool cannot mask")
+                _note(un, _p(path, "data"), "data", R_OPAQUE)
             continue
         if btype == "text" and key == "text":
             if not isinstance(v, str):
@@ -503,18 +525,54 @@ def _block(blk, path, out, un):
             # THE path that matters. In agentic use this carries the `Read`
             # of a config file, nmap output, a Burp export.
             _text_or_blocks(v, _p(path, "content"), out, un)
-        elif btype in ("image", "document") and key == "source":
-            # POLICY REFUSAL, unchanged.
-            raise RefusedField(
-                _p(path, "source"),
-                "an %s block carries bytes this tool cannot mask. A "
-                "screenshot of a client system is client data, and "
-                "forwarding it would make the claim that only masked text "
-                "leaves the machine false. Strip the block, or send the "
-                "text" % btype)
+        elif btype == "image" and key == "source":
+            # Forwarded and named since 2026-10-31; see ATTACHMENTS.
+            _note(un, _p(path, "source"), "image", R_IMAGE)
+        elif btype == "document" and key == "source":
+            _document_source(v, _p(path, "source"), out, un)
+        elif btype == "document" and key in ("title", "context") \
+                and isinstance(v, str):
+            _leaf(_p(path, key), v, out, un)
         else:
             _note(un, _p(path, key), key,
                   R_BLOCK if known else R_BLOCKTYPE)
+
+
+def _document_source(src, path, out, un):
+    """What of a document's source can be masked is masked; the rest is named.
+
+    "text"     plain text in `data`: masked, like any message text.
+    "content"  a list of content blocks (or a string): walked like a
+               message's content, so its text is masked and any image in it
+               is named.
+    anything else -- "base64" (a PDF), "url", "file" -- is bytes or a
+               reference this tool cannot mask: forwarded and named. A URL
+               is not masked on purpose: the provider fetches it, and a
+               masked URL fetches nothing.
+    """
+    stype = src.get("type") if isinstance(src, dict) else None
+    if stype == "text" and isinstance(src.get("data"), str):
+        _leaf(_p(path, "data"), src["data"], out, un)
+    elif stype == "content" and "content" in src:
+        _text_or_blocks(src["content"], _p(path, "content"), out, un)
+    else:
+        _note(un, path, "document", R_DOCUMENT)
+
+
+# A tool-input key is author-chosen, and the path string that inject() uses
+# to find it again is "."- and "[n]"-delimited. These characters are
+# escaped in a key so that any key round-trips. Until 2026-10-31 a key
+# containing one was REFUSED, which -- like every refusal in a resent
+# history -- blocked the rest of the conversation.
+_ESCAPES = (("\\", "\\\\"), (".", "\\."), ("[", "\\["), ("]", "\\]"))
+
+
+def _esc(key):
+    if key == "":
+        return "\\0"              # an empty key, which _tokens() reads back
+    for raw, escaped in _ESCAPES:
+        key = key.replace(raw, escaped)
+    return key
 
 
 def _free_seg(path, key):
@@ -526,21 +584,11 @@ def _free_seg(path, key):
     into the wrong node: fail-closed turns into fail-crash, and the server
     reports it as a pipeline error that names nothing useful.
 
-    Refusing names the reason instead. Real tool-input keys are identifiers,
-    so this converges in practice. Added 2026-10-17, when `_seg` -- which
-    guarded the same hazard on the schema path -- went dormant with
-    `tools[]` and left this path unguarded.
+    Since 2026-10-31 the key is ESCAPED rather than refused (see _esc), so
+    `{"a.b": ...}`, `{"x[0]": ...}` and `{"": ...}` are masked like any
+    other value. A non-string key cannot come from JSON; it is stringified.
     """
-    if not isinstance(key, str) or not key:
-        raise RefusedField(path, "tool input key is not a usable name")
-    bad = [c for c in (".", "[", "]") if c in key]
-    if bad:
-        raise RefusedField(
-            _p(path, key),
-            "tool input key %r contains %s, which the path parser used by "
-            "inject() would mis-read. Refused rather than injected into the "
-            "wrong field" % (key, " and ".join(repr(c) for c in bad)))
-    return key
+    return _esc(key if isinstance(key, str) else str(key))
 
 
 def _free(val, path, out, un):
@@ -803,20 +851,49 @@ def inject(body, replacements):
     return out
 
 
+def _tokens(path):
+    """Parse a path from extract(): keys split on ".", indices in "[n]".
+
+    A backslash escapes the next character, so a key may contain ".", "["
+    or "]"; a whole segment "\\0" is the empty key. See _esc().
+    """
+    tokens, name, have = [], [], False
+    i, n = 0, len(path)
+    while i < n:
+        c = path[i]
+        if c == "\\" and i + 1 < n:
+            d = path[i + 1]
+            if (d == "0" and not have
+                    and (i + 2 == n or path[i + 2] in ".[")):
+                have = True             # the empty key
+            else:
+                name.append(d)
+                have = True
+            i += 2
+            continue
+        if c == "." or c == "[":
+            if have:
+                tokens.append(("k", "".join(name)))
+            name, have = [], False
+            if c == "[":
+                j = path.index("]", i)
+                tokens.append(("i", int(path[i + 1:j])))
+                i = j + 1
+            else:
+                i += 1
+            continue
+        name.append(c)
+        have = True
+        i += 1
+    if have:
+        tokens.append(("k", "".join(name)))
+    return tokens
+
+
 def _set(root, path, value):
     """Walk a dotted/indexed path and assign. Paths come from extract()."""
     node = root
-    tokens = []
-    for part in path.split("."):
-        name, _, rest = part.partition("[")
-        if name:
-            tokens.append(("k", name))
-        while rest:
-            idx, _, rest = rest.partition("]")
-            if idx:
-                tokens.append(("i", int(idx)))
-            if rest.startswith("["):
-                rest = rest[1:]
+    tokens = _tokens(path)
     for kind, tok in tokens[:-1]:
         node = node[tok]
     kind, tok = tokens[-1]
@@ -1015,20 +1092,9 @@ def _self_test():
     check(is_system_reminder("<system-reminder></system-reminder>") is False,
           "an empty reminder shell is not treated as one")
 
-    # ── 5. policy refusals that STAY refusals ───────────────────────────
-    print("\n-- policy refusals (these do not change) --")
+    # ── 5. refusals: malformed bodies only ──────────────────────────────
+    print("\n-- refusals: malformed bodies only --")
 
-    refuses({"messages": [{"role": "user", "content": [
-        {"type": "image",
-         "source": {"type": "base64", "data": "iVBORw0K"}}]}]},
-            "image block carrying bytes")
-    refuses({"messages": [{"role": "user", "content": [
-        {"type": "document",
-         "source": {"type": "base64", "data": "JVBERi0="}}]}]},
-            "document block carrying bytes")
-    refuses({"messages": [{"role": "user", "content": [
-        {"type": "text", "text": "hi", "data": "AAAA"}]}]},
-            "opaque data on a block that is not redacted_thinking")
     refuses({"messages": "not an array"}, "malformed messages array")
     refuses({"messages": [{"role": "user", "content": 7}]},
             "malformed message content")
@@ -1036,25 +1102,76 @@ def _self_test():
         {"text": "no discriminator"}]}]}, "block with no type")
     refuses("not a dict", "body that is not a JSON object")
 
-    # The image message keeps its exact wording: documentation quotes it.
-    try:
-        extract({"messages": [{"role": "user", "content": [
-            {"type": "image", "source": {"data": "x"}}]}]})
-        check(False, "the image refusal still says why")
-    except RefusedField as e:
-        check("cannot mask" in str(e) and "screenshot" in str(e),
-              "the image refusal still says why")
+    # ── 5b. attachments: forwarded and named (2026-10-31) ───────────────
+    print("\n-- attachments: forwarded and named, never refused --")
 
-    # The tool-input path guard: a key inject() could not put back refuses
-    # rather than crashing _set with ValueError.
-    refuses({"messages": [{"role": "user", "content": [
-        {"type": "tool_use", "id": "t", "name": "n",
-         "input": {"a.b": "x"}}]}]},
-            "a dotted tool-input key refuses rather than mis-injecting")
-    refuses({"messages": [{"role": "user", "content": [
-        {"type": "tool_use", "id": "t", "name": "n",
-         "input": {"a[0]": "x"}}]}]},
-            "an indexed tool-input key refuses rather than crashing _set")
+    reports({"messages": [{"role": "user", "content": [
+        {"type": "image",
+         "source": {"type": "base64", "media_type": "image/png",
+                    "data": "iVBORw0K"}}]}]},
+            "image", "an image is forwarded and named",
+            "messages[0].content[0].source")
+    reports({"messages": [{"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t", "content": [
+            {"type": "image", "source": {"type": "base64",
+                                         "data": "iVBORw0K"}}]}]}]},
+            "image", "an image inside a tool result (an agent's Read)")
+    reports({"messages": [{"role": "user", "content": [
+        {"type": "document",
+         "source": {"type": "base64", "media_type": "application/pdf",
+                    "data": "JVBERi0="}}]}]},
+            "document", "a PDF is forwarded and named")
+    reports({"messages": [{"role": "user", "content": [
+        {"type": "document",
+         "source": {"type": "url", "url": "https://portal.acmebank.cz/a.pdf"}}
+    ]}]}, "document", "a URL document is forwarded and named")
+    reports({"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "hi", "data": "AAAA"}]}]},
+            "data", "opaque data on a block that is not redacted_thinking")
+
+    # A document's TEXT is still masked.
+    doc = {"messages": [{"role": "user", "content": [
+        {"type": "document", "title": "acmebank report",
+         "context": "from jan.novak@acmebank.cz",
+         "source": {"type": "text", "media_type": "text/plain",
+                    "data": "host portal.acmebank.cz"}},
+        {"type": "document",
+         "source": {"type": "content", "content": [
+             {"type": "text", "text": "ip 10.0.0.5"},
+             {"type": "image", "source": {"type": "base64", "data": "x"}}]}},
+    ]}]}
+    un = []
+    got = extract(doc, un)
+    texts = [t for _, t in got]
+    check(set(texts) == {"acmebank report", "from jan.novak@acmebank.cz",
+                         "host portal.acmebank.cz", "ip 10.0.0.5"},
+          "a document's title, context, text source and content text are "
+          "masked (got %r)" % texts)
+    check(short_names(un) == ["image"],
+          "...and the image inside its content is named (got %r)"
+          % short_names(un))
+    back = inject(doc, [(p_, "M") for p_, _ in got])
+    d0, d1 = back["messages"][0]["content"]
+    check(d0["title"] == d0["context"] == d0["source"]["data"] == "M"
+          and d0["source"]["media_type"] == "text/plain"
+          and d1["source"]["content"][0]["text"] == "M"
+          and d1["source"]["content"][1]["source"]["data"] == "x",
+          "inject puts each masked document string back in place")
+
+    # Tool-input keys the path syntax uses are escaped, not refused.
+    odd = {"messages": [{"role": "assistant", "content": [
+        {"type": "tool_use", "id": "t", "name": "n", "input": {
+            "a.b": "v1", "x[0]": "v2", "": "v3", "\\": "v4",
+            "\\0": "v5", "0": "v6", "n": {"c.d": ["v7", {"]": "v8"}]}}}]}]}
+    got = extract(odd)
+    check(sorted(t for _, t in got) == ["v%d" % i for i in range(1, 9)],
+          "every value under an awkward key is extracted")
+    back = inject(odd, [(p_, t.upper()) for p_, t in got])
+    inp = back["messages"][0]["content"][0]["input"]
+    check(inp == {"a.b": "V1", "x[0]": "V2", "": "V3", "\\": "V4",
+                  "\\0": "V5", "0": "V6",
+                  "n": {"c.d": ["V7", {"]": "V8"}]}},
+          "and each is put back under its own key (got %r)" % (inp,))
 
     # ── 6. what used to refuse and now reports ──────────────────────────
     print("\n-- converted: forwarded AND reported --")
