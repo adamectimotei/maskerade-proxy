@@ -37,6 +37,7 @@ import importlib
 import os
 import re
 import time
+import unicodedata
 
 from .config import load_config
 from .masker import apply_masks, unmask_response, is_low_risk_numeric_id
@@ -63,6 +64,101 @@ FRAME_STAGES = frozenset({"ner", "llm"})
 # that a more authoritative detector typed specifically (IBAN, UUID, ...),
 # the specific label is promoted onto the covering extent.
 GENERIC_ENTITY_TYPES = frozenset({"SENSITIVE_FIELD", "HIGH_ENTROPY_SECRET"})
+
+
+# ── Bare-number veto (0.1.6) ─────────────────────────────────────────────
+# Digit-run identifier types whose detectors fire on an unpunctuated run of
+# digits: regex's rodne_cislo and de_steuer_id, and form's bsn / pesel / cpf /
+# isbn10 / cusip rows. Two positions are never such an identifier:
+#
+#   1. the digits of a DECIMAL number (`<digit>.` before or `.<digit>` after):
+#      no national ID is the fractional part of a number. 0.1.5 masked a
+#      metric `"lastScrapeDuration":0.<digits>` as CZ_RODNE_CISLO / NL_BSN.
+#   2. a BARE JSON NUMBER (`"key": 12345678901,`) whose key names no ID: a
+#      byte count under `"total"` was masked as DE_STEUER_ID.
+#
+# Both produced `"key":[PLACEHOLDER]` — invalid JSON — and both were
+# over-masks. Applied only to regex and form output of these types, so
+# custom rules and the detector slot (gliner, keyval, checksum, id) are never
+# touched. Deliberately NOT applied to CREDIT_CARD, IMEI, GTIN and similar:
+# dropping a real card stored as a JSON number under a key outside the list
+# below would trade broken JSON for a leak.
+#
+# The masker is text-keyed: a value detected ANYWHERE ELSE in the message is
+# still substituted at every word boundary, these positions included. This
+# veto removes the detection, it cannot exempt a position.
+BARE_NUMBER_VETO_TYPES = frozenset({
+    "CZ_RODNE_CISLO", "DE_STEUER_ID", "NL_BSN", "PL_PESEL", "BR_CPF",
+    "ISBN", "CUSIP",
+})
+
+# A JSON key directly before the value, optionally inside escaped JSON
+# (`\"key\":`). The key grammar is keyval's _JSON_PAIR key. Matched against
+# the last _JSON_KEY_WINDOW characters before the value; a key further away
+# than that does not match, and the value stays masked.
+_JSON_KEY_BEFORE_RE = re.compile(r'\\?"([^"\\\s]{1,64})\\?"\s*:\s*-?$')
+_JSON_KEY_WINDOW = 128
+# What may follow a complete JSON number value.
+_JSON_VALUE_END_RE = re.compile(r'\s*(?:[,}\]]|$)')
+_ASCII_DIGITS = "0123456789"
+
+# Key tokens that keep a bare JSON number masked. keyval's ID_SUFFIX_TOKENS
+# (id, number, code, ...) are added at first use; these are keyval's
+# government-identifier PII tokens plus the national spellings.
+_ID_KEY_TOKENS_EXTRA = frozenset({
+    "ssn", "sin", "nin", "nino", "taxid", "tin", "vat", "passport",
+    "rc", "rodne", "cislo", "bsn", "steuer", "idnr", "tax", "ico", "dic",
+    "pesel", "cpf", "cnpj",
+})
+_id_key_tokens = None
+
+
+def _key_names_an_id(key):
+    """True if a JSON key reads as an identifier field (steuerId, IČO, bsn)."""
+    global _id_key_tokens
+    from .stages.keyval import tokenize_key, ID_SUFFIX_TOKENS
+    if _id_key_tokens is None:
+        _id_key_tokens = frozenset(ID_SUFFIX_TOKENS) | _ID_KEY_TOKENS_EXTRA
+    # Strip diacritics so `IČO` / `rodnéČíslo` tokenise to ico / rodne cislo;
+    # tokenize_key splits on every non-ASCII character.
+    folded = "".join(c for c in unicodedata.normalize("NFKD", key)
+                     if not unicodedata.combining(c))
+    return bool(tokenize_key(folded) & _id_key_tokens)
+
+
+def _veto_bare_numbers(text, entities):
+    """Drop digit-run IDs sitting in a decimal or an un-keyed JSON number.
+
+    `text` must be the text the entities' offsets index. An entity without
+    integer offsets is kept: when the position is unknown, mask.
+    """
+    out = []
+    for e in entities:
+        start, end = e.get("start"), e.get("end")
+        if (e.get("entity_type") not in BARE_NUMBER_VETO_TYPES
+                or not (e.get("stage") == "regex"
+                        or e.get("detector") == "form")
+                or not isinstance(start, int) or not isinstance(end, int)
+                or not 0 <= start < end <= len(text)
+                # Only a plain digit run: `880314/2854` and an ISBN ending
+                # in X are never a JSON number or a decimal's digits.
+                or not all(c in _ASCII_DIGITS for c in text[start:end])):
+            out.append(e)
+            continue
+        # Rule 1: part of a decimal number.
+        if ((start >= 2 and text[start - 1] == "."
+                and text[start - 2] in _ASCII_DIGITS)
+                or (end + 1 < len(text) and text[end] == "."
+                    and text[end + 1] in _ASCII_DIGITS)):
+            continue
+        # Rule 2: a bare JSON number whose key names no identifier.
+        m = _JSON_KEY_BEFORE_RE.search(text, max(0, start - _JSON_KEY_WINDOW),
+                                       start)
+        if (m and _JSON_VALUE_END_RE.match(text, end)
+                and not _key_names_an_id(m.group(1))):
+            continue
+        out.append(e)
+    return out
 
 
 # ── Stage key set ────────────────────────────────────────────────────────
@@ -490,6 +586,10 @@ class Pipeline:
         if stages["regex"]:
             t0 = time.time()
             regex_entities = regex_detect(text_for_detection, self.config)
+            # Before intermediate masking, so a vetoed hit never becomes a
+            # placeholder. Offsets index text_for_detection.
+            regex_entities = _veto_bare_numbers(text_for_detection,
+                                                regex_entities)
             timing["regex"] = round(time.time() - t0, 3)
             all_entities.extend(regex_entities)
             if verbose:
@@ -526,6 +626,11 @@ class Pipeline:
                 from .stages.form import form_detect
                 form_entities = form_detect(intermediate_text, self.config,
                                             notes=stage_notes)
+                # After form returns, not inside it: form claims spans as it
+                # goes, so a veto inside would let a later scheme (cusip)
+                # claim the same digits. Offsets index intermediate_text.
+                form_entities = _veto_bare_numbers(intermediate_text,
+                                                   form_entities)
                 form_entities = self._remove_overlaps(form_entities, all_entities)
                 all_entities.extend(form_entities)
             except Exception as e:
