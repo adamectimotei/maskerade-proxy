@@ -133,12 +133,12 @@ maskerade rules check .maskerade/rules.txt --against sample.txt
 | Speed | milliseconds per message | slower; the model runs on CPU |
 | Catches less of | free-text person and company names your rules don't list | very large bodies: the model skips inputs over 16 384 characters, the other detectors still run |
 
-### Measured detection (0.1.0, 25 Oct 2026)
+### Measured detection (0.1.6, 15 Nov 2026)
 
-Measured with **no rules file**, which is the worst case; your rules only add to this. Two test sets, both private:
+Measured with **no rules file**, which is the worst case; your rules only add to this. There are two test sets:
 
-- 30 annotated pentest prompts, 435 values: names, companies, hostnames, credentials, IDs
-- 1,060 HTTP requests and responses from open-source web apps, 1,909 values. 364 of these messages contain nothing sensitive.
+- 30 annotated pentest prompts with 435 values: names, companies, hostnames, credentials and IDs.
+- 1,060 HTTP requests and responses from 36 open-source web apps, with 1,909 values. 364 of these messages contain nothing sensitive. This set is [public](https://github.com/adamectimotei/maskerade-proxy/releases/tag/corpus-v1.2); the prompts are private.
 
 | | fast | full |
 |---|---|---|
@@ -146,21 +146,24 @@ Measured with **no rules file**, which is the worst case; your rules only add to
 | Prompts: masked completely | 79.3% | 88.7% |
 | HTTP traffic: values masked | 94.8% | 95.7% |
 | HTTP traffic: masked completely | 94.5% | 95.1% |
-| Prompts: placeholders that hit a real value | 81.4% | 79.7% |
-| HTTP traffic: placeholders that hit a real value | 52.8% | 46.3% |
-| Time per message, laptop CPU (i7-1365U) | milliseconds | ~1.5 s for traffic, ~3-5 s for a prompt; up to ~20 s for large bodies |
+| Prompts: placeholders that hit a real value | 81.4% | 79.8% |
+| HTTP traffic: placeholders that hit a real value | 53.1% | 46.7% |
+| HTTP traffic: JSON bodies broken by masking | 0 of 348 | 0 of 348 |
+| Time per message, laptop CPU (i7-1365U) | ~2 ms for traffic, ~9 ms for a prompt | ~0.8 s for traffic (95% under 11 s), ~2-4 s for a prompt |
 
 *Masked completely* also requires every word of a multi-word value to be masked: `Jan [PERSON_1]` counts as masked but not as completely masked.
 
 **What it misses most:**
 
-- In HTTP traffic, application-specific identifiers with no recognisable shape. These are 72 of the 83 misses.
+- In HTTP traffic, application-specific identifiers with no recognisable shape, such as customer and order numbers. These are 72 of the full tier's 83 misses.
 - In prompts, internal hostnames without a `.corp`/`.local`-style suffix.
 - On the fast tier, free-text person and company names: only 38% are caught without the model.
 
-**Over-masking is deliberate:** 160 of the 364 harmless HTTP messages still got at least one placeholder.
+**Over-masking is deliberate:** 142 of the 364 harmless HTTP messages still got at least one placeholder (158 on the full tier).
 
-**Caveat:** both test sets were built by the author, and the prompt set was also used during development. Treat these numbers as indicative, not independent. Put everything you know about the client in your rules file.
+**Compared with other masking tools** (PrivAiTe, LiteLLM + Presidio, maskflow) on the same data and hardware, see [BENCHMARK.md](BENCHMARK.md).
+
+**Caveat:** I built both test sets myself, and the prompt set was also used during development. Treat these numbers as indicative, not independent. Put everything you know about the client in your rules file.
 
 ## Is it working?
 
@@ -248,6 +251,15 @@ python -m maskerade.warm [--full] [--to DIR] [--check] [--traceback]
 ```
 
 `--help` on any subcommand has the details. `--config FILE` replaces the packaged detection config rather than merging with it, so start from a copy of `maskerade/default_config.yaml`. For an offline machine, run `python -m maskerade.warm --full --to DIR` on a connected one, copy the folder over, and set the variables it prints.
+
+## Planned
+
+Two new detectors, both aimed at the gaps the [benchmark](BENCHMARK.md) shows. Both would run locally on the CPU, like everything else. Neither is scheduled yet.
+
+- **A small PII model for names.** A compact, MiniLM-class model trained for PII: person names, companies, addresses. It would catch most free-text names in milliseconds instead of seconds. Today, without the full tier's model, the fast tier catches about half of the names in HTTP traffic and 38% of the names and companies in prompts.
+- **OpenAI's privacy-filter model, as quantized ONNX.** It learns from the surrounding text that the number next to "customer" or "account" is an identifier. That targets the largest remaining miss in HTTP traffic: application-specific IDs with no recognisable shape, which are 72 of the full tier's 83 misses.
+
+Each will ship only if it raises recall on both test sets without a comparable rise in over-masking, measured the same way as the numbers in [BENCHMARK.md](BENCHMARK.md).
 
 ## Security
 
